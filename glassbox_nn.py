@@ -18,11 +18,11 @@ WEIGHTS = ROOT / "models" / "glassbox_nn.pt"
 FEATURES = ("suspicious", "timeout", "not_performed", "completed", "network",
             "filesystem", "process", "no_high_risk", "static_strings", "error")
 PATTERNS = (
-    r"verdict:\\s*suspicious|potentially suspicious|suspicious reference",
+    r"verdict:\s*suspicious|potentially suspicious|suspicious reference",
     r"execution reached the sandbox|execution timeout|timed out",
-    r"dynamic execution:\\s*not performed",
-    r"dynamic execution:\\s*completed",
-    r"network|connect\\(",
+    r"dynamic execution:\s*not performed",
+    r"dynamic execution:\s*completed",
+    r"network|connect\(",
     r"file changes|filesystem|created|deleted|modified",
     r"process|execve|fork",
     r"no high-risk traced behavior detected",
