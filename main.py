@@ -1329,11 +1329,7 @@ def analyze_zip(
 
     else:
 
-        entry_remote = (
-            REMOTE_WORKSPACE
-            + "/"
-            + entrypoint
-        )
+        entry_remote = REMOTE_WORKSPACE + "/" + entrypoint
 
         parent = str(
             PurePosixPath(
