@@ -24,6 +24,7 @@ from pathlib import Path, PurePosixPath
 
 from flask import Flask, jsonify, render_template, request
 from glassbox_nn import summarize_report
+from image_analysis import inspect_image
 from werkzeug.exceptions import RequestEntityTooLarge
 
 # ============================================================
@@ -1197,10 +1198,22 @@ def analyze_normal_file(
         remote_path
     )
 
-    behavior = execute_and_monitor(
-        remote_path,
-        REMOTE_INPUT
-    )
+    image_info = inspect_image(local_path)
+    if image_info is not None:
+        add_text("")
+        add_text("IMAGE INSPECTION")
+        add_text(image_info)
+        behavior = {
+            "executed": False,
+            "reason": "Image files are inspected as data and are not executed.",
+            "stdout": "", "stderr": "", "returncode": None,
+            "changes": "", "trace": "",
+        }
+    else:
+        behavior = execute_and_monitor(
+            remote_path,
+            REMOTE_INPUT
+        )
 
     show_report(
         local_path.name,
