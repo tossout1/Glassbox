@@ -173,12 +173,12 @@
                 </select>
 
                 <p class="notice" id="osNotice" role="status">
-                    Only Linux ARM64 is currently supported for analysis.
+                    Linux ARM64 analysis is available; Windows and macOS require additional VM setup.
                 </p>
 
                 <p class="notice">
                     Files run only inside the configured QEMU sandbox.
-                    Analysis is serialized to protect VM state.
+                    Analyses are queued and run in independent VM workers.
                     Maximum upload: 30 MiB.
                 </p>
 
@@ -264,7 +264,7 @@
         // Display operating system compatibility
         os.addEventListener("change", (e) => {
             osNotice.textContent = e.target.value === "linux"
-                ? "Only Linux ARM64 is currently supported for analysis."
+                ? "Linux ARM64 analysis is available."
                 : "This operating system is not yet supported by the analysis backend.";
         });
 
