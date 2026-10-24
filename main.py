@@ -23,6 +23,7 @@ import zipfile
 from pathlib import Path, PurePosixPath
 
 from flask import Flask, jsonify, render_template, request
+from ai_summary import summarize_report
 from werkzeug.exceptions import RequestEntityTooLarge
 
 # ============================================================
