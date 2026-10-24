@@ -16,6 +16,9 @@ button:disabled{opacity:.55;cursor:wait}pre{white-space:pre-wrap;word-break:brea
 <section class="panel"><form method="post" enctype="multipart/form-data" id="uploadForm">
 <label class="zone" id="zone" for="file"><strong id="filename">Drag &amp; drop a file here</strong><small>Or click to choose a file</small></label>
 <input id="file" name="file" type="file" required>
+<p><label for="os">Select your operating system</label></p>
+<select id="os" name="os" required style="background:#091120;color:#e7ecf5;border:1px solid #6982ab;border-radius:10px;padding:12px;width:100%;max-width:340px"><option value="linux" selected>Linux</option><option value="windows">Windows</option><option value="macos">macOS</option></select>
+<p class="notice" id="osNotice" role="status">Only Linux ARM64 is currently supported for analysis.</p>
 <p class="notice">Files run only inside the configured QEMU sandbox. Analysis is serialized to protect VM state. Maximum upload: 30 MiB.</p>
 <button id="submit" type="submit">Analyze file</button><span id="working" role="status" aria-live="polite"></span>
 </form></section>
@@ -29,5 +32,6 @@ file.addEventListener('change',()=>{name.textContent=file.files[0]?.name||'Drag 
 for(const event of ['dragenter','dragover'])zone.addEventListener(event,e=>{e.preventDefault();zone.classList.add('drag')});
 for(const event of ['dragleave','drop'])zone.addEventListener(event,e=>{e.preventDefault();zone.classList.remove('drag')});
 zone.addEventListener('drop',e=>{if(e.dataTransfer.files.length){file.files=e.dataTransfer.files;name.textContent=file.files[0].name}});
+document.getElementById('os').addEventListener('change',e=>{document.getElementById('osNotice').textContent=e.target.value==='linux'?'Only Linux ARM64 is currently supported for analysis.':'This operating system is not yet supported by the analysis backend.'});
 form.addEventListener('submit',e=>{if(!file.files.length){e.preventDefault();return}button.disabled=true;working.textContent=' Analyzing in sandbox… This may take a while.'});
 </script></body></html>
