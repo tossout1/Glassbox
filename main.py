@@ -25,6 +25,7 @@ from pathlib import Path, PurePosixPath
 from flask import Flask, jsonify, render_template, request
 from glassbox_nn import summarize_report
 from image_analysis import inspect_image
+from binary_analysis import inspect_binary
 from werkzeug.exceptions import RequestEntityTooLarge
 
 # ============================================================
@@ -1197,6 +1198,10 @@ def analyze_normal_file(
     static = static_analysis(
         remote_path
     )
+
+    # Every upload receives a format-independent raw-byte inspection.
+    add_text("")
+    add_text(inspect_binary(local_path))
 
     image_info = inspect_image(local_path)
     if image_info is not None:
