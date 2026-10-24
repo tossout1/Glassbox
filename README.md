@@ -2,7 +2,7 @@
 
 Glassbox is an experimental, locally hosted file-analysis application built with Flask and QEMU. It aims to inspect files in isolated virtual machines and report observed behavior.
 
-> **Project status (October 2026):** Linux ARM64 analysis is implemented but requires a prepared guest and further validation. Windows 11 ARM64 has been booted successfully in QEMU, but **Windows file analysis is not yet connected to the website**. macOS sandboxing is not implemented. Do not assume a file is safe based only on a Glassbox report.
+> **Project status (October 2026):** Linux ARM64 analysis is implemented but requires a prepared guest and further validation. **Windows and macOS analysis are future goals**, not part of the current demo. Windows 11 ARM64 has been booted separately in QEMU, but neither platform has a completed dynamic-analysis workflow. Do not assume a file is safe based only on a Glassbox report.
 
 ## Requirements
 
