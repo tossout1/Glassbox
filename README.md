@@ -56,7 +56,7 @@ The current Linux backend expects the following **local files**, which are not a
 
 The VM expects an SSH user named `sandbox` and forwards guest SSH to host `127.0.0.1:2222` by default. The guest must have SSH and the matching public key configured. Its synthetic environment must match the paths expected by `main.py`, including `/home/Augustine Ramswell`.
 
-**This part is not yet a one-command installer.** You must provision the Debian guest and cloud-init seed to match the application. Do not put SSH private keys or VM disk images into Git.
+**Large-file distribution plan:** The repository intentionally does not contain VM disk images. Future releases can publish a manifest of approved download URLs and SHA-256 checksums for Linux guest assets; the setup tool should verify checksums before use. Download Debian cloud images from official Debian distribution sources when possible. Do not download arbitrary preconfigured VM images from untrusted sources. Windows installers must be obtained by each user from Microsoft; do not distribute installed Windows disks, activation material, or TPM state.\n\n**This part is not yet a one-command installer.** You must provision the Debian guest and cloud-init seed to match the application. Do not put SSH private keys or VM disk images into Git.
 
 Once configured, launch the website:
 
@@ -102,7 +102,7 @@ If Windows boots back into the installer, stop the VM and retry without `--iso`.
 - The Windows VM is **not yet wired into Glassbox's web analysis workflow**. Selecting Windows in the website does not currently run Windows file analysis.
 - Do not run untrusted files in the Windows VM just because it boots. The Windows analysis containment, monitoring, and automated reset workflow have not been implemented.
 
-### 5. Current OS support
+### 5. Large-file downloads and reproducible installation\n\n**Source code:** clone this GitHub repository. **Linux VM disk:** obtain a verified ARM64 Debian 12 cloud image and configure it for Glassbox. **Cloud-init seed:** generate locally with the guest SSH public key; do not distribute private SSH keys. **Synthetic data:** generate or download only fictional test data. **Windows VM:** create a local blank 64 GB disk, install from a user-supplied Microsoft ARM64 ISO, and preserve UEFI/TPM state locally.\n\nA future `setup.py` or `scripts/setup_vms.py` can automate the above once the VM provisioning process and checksum manifest are implemented. No download URL or installer is currently guaranteed.\n\n### 6. Current OS support
 
 | Guest operating system | VM boot/setup | Web file analysis |
 | --- | --- | --- |
