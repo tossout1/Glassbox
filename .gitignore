@@ -2,3 +2,4 @@
 *.iso
 venv/
 .venv/
+*.pyc
