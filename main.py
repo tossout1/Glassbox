@@ -14,11 +14,12 @@ import sys
 import tarfile
 import tempfile
 import threading
+import uuid
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from flask import Flask, render_template, request
+from flask import Flask, jsonify, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
 # ============================================================
@@ -83,6 +84,14 @@ signal.signal(signal.SIGTERM, handle_exit)
 ANALYSIS_LOCK = threading.Lock()
 _ANALYSIS_MESSAGES = []
 _BOOTED = False
+JOBS = {}
+JOBS_LOCK = threading.Lock()
+
+def set_progress(job_id, percent, stage):
+    """Update a scan's completed milestone; percentages are stage estimates."""
+    with JOBS_LOCK:
+        JOBS[job_id].update(percent=percent, stage=stage)
+
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 app.config["TRUSTED_HOSTS"] = ["localhost", "127.0.0.1"]
@@ -1618,38 +1627,84 @@ def boot_sandbox():
 
     _BOOTED = True
 
-@app.route("/", methods=["GET", "POST"])
-def index():
-    """Render the upload page and process one submitted file at a time."""
-    if request.method == "GET":
-        return render_template("index.html", report=None, error=None)
-    selected_os = request.form.get("os", "linux")
-    if selected_os not in ("linux", "windows", "macos"):
-        return render_template("index.html", report=None, error="Invalid OS selection."), 400
-    if selected_os != "linux":
-        return render_template("index.html", report=None, error="Only Linux ARM64 is currently supported by the QEMU backend."), 400
-    uploaded = request.files.get("file")
-    if uploaded is None or not uploaded.filename:
-        return render_template("index.html", report=None, error="Choose a file to analyze."), 400
-    # Hard cap is enforced by Flask; avoid displaying any private server paths.
-    if not ANALYSIS_LOCK.acquire(blocking=False):
-        return render_template("index.html", report=None, error="Another analysis is running. Try again shortly."), 409
+def run_analysis(job_id, local_path, original_name, temp_dir):
+    """Run one scan in a worker so the browser can poll for progress."""
     try:
         _ANALYSIS_MESSAGES.clear()
-        safe_name = safe_filename(Path(uploaded.filename).name)
-        with tempfile.TemporaryDirectory(prefix="glassbox_") as tmp:
-            local_path = Path(tmp) / safe_name
-            uploaded.save(local_path)
-            if zipfile.is_zipfile(local_path):
-                inspect_zip(local_path)
-            boot_sandbox()
-            process_selected_file(local_path, safe_name)
-        return render_template("index.html", report="\n".join(_ANALYSIS_MESSAGES), error=None)
+        set_progress(job_id, 10, "Validating file")
+        if zipfile.is_zipfile(local_path):
+            inspect_zip(local_path)
+        set_progress(job_id, 25, "Starting isolated virtual machine")
+        boot_sandbox()
+        set_progress(job_id, 55, "Analyzing file inside sandbox")
+        process_selected_file(local_path, original_name)
+        set_progress(job_id, 100, "Analysis complete")
+        with JOBS_LOCK:
+            JOBS[job_id].update(done=True, report="\\n".join(_ANALYSIS_MESSAGES))
     except Exception as exc:
-        # Preserve detailed sandbox diagnostics in the report for local use.
-        return render_template("index.html", report="\n".join(_ANALYSIS_MESSAGES), error=str(exc)), 500
+        with JOBS_LOCK:
+            JOBS[job_id].update(done=True, error=str(exc), report="\\n".join(_ANALYSIS_MESSAGES))
     finally:
+        temp_dir.cleanup()
         ANALYSIS_LOCK.release()
+
+
+@app.route("/", methods=["GET"])
+def index():
+    """Display the upload interface."""
+    return render_template("index.html", report=None, error=None)
+
+
+@app.route("/analyze", methods=["POST"])
+def start_analysis():
+    """Save a file and start background analysis."""
+    selected_os = request.form.get("os", "linux")
+    if selected_os not in ("linux", "windows", "macos"):
+        return jsonify(error="Invalid OS selection."), 400
+    if selected_os != "linux":
+        return jsonify(error="Only Linux ARM64 is currently supported."), 400
+
+    uploaded = request.files.get("file")
+    if uploaded is None or not uploaded.filename:
+        return jsonify(error="Choose a file to analyze."), 400
+    if not ANALYSIS_LOCK.acquire(blocking=False):
+        return jsonify(error="Another analysis is running. Try again shortly."), 409
+
+    temp_dir = None
+    try:
+        temp_dir = tempfile.TemporaryDirectory(prefix="glassbox_")
+        safe_name = safe_filename(Path(uploaded.filename).name)
+        local_path = Path(temp_dir.name) / safe_name
+        uploaded.save(local_path)
+        job_id = uuid.uuid4().hex
+        with JOBS_LOCK:
+            # Keep only recent jobs to avoid unbounded status history.
+            if len(JOBS) >= 30:
+                oldest = next(iter(JOBS))
+                JOBS.pop(oldest)
+            JOBS[job_id] = dict(percent=5, stage="Upload received", done=False, report="", error=None)
+        threading.Thread(
+            target=run_analysis,
+            args=(job_id, local_path, safe_name, temp_dir),
+            daemon=True,
+        ).start()
+        return jsonify(job_id=job_id), 202
+    except Exception as exc:
+        if temp_dir is not None:
+            temp_dir.cleanup()
+        ANALYSIS_LOCK.release()
+        return jsonify(error=str(exc)), 500
+
+
+@app.route("/progress/<job_id>", methods=["GET"])
+def progress(job_id):
+    """Return scan progress for browser polling."""
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+        if job is None:
+            return jsonify(error="Unknown analysis."), 404
+        return jsonify(job)
+
 
 @app.errorhandler(RequestEntityTooLarge)
 def too_large(exc):
