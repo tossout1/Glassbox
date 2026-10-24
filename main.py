@@ -1685,7 +1685,7 @@ def worker_main(local_path, original_name):
             inspect_zip(local_path)
         boot_sandbox()
         process_selected_file(Path(local_path), original_name)
-        print("\\n".join(_ANALYSIS_MESSAGES))
+        print("\n".join(_ANALYSIS_MESSAGES))
         return 0
     except Exception as exc:
         print(f"Worker error: {exc}", file=sys.stderr)
