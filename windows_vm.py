@@ -75,8 +75,8 @@ def boot_windows(iso=None, memory_mb=4096, cpus=4):
             "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
             "-device", "tpm-tis-device,tpmdev=tpm0",
             "-drive", f"if=none,file={DISK},format=qcow2,id=system",
-            "-device", "virtio-blk-device,drive=system",
             "-device", "qemu-xhci", "-device", "usb-tablet",
+            "-device", "nvme,drive=system,serial=GLASSBOX001",
             "-device", "usb-kbd", "-device", "ramfb",
             "-nic", "user,restrict=on", "-display", "gtk",
         ]
