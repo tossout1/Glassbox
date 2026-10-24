@@ -13,7 +13,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
-from flask import Flask, render_template_string, request
+from flask import Flask, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
 # ============================================================
@@ -1851,23 +1851,21 @@ def boot_sandbox():
 
     _BOOTED = True
 
-HTML = "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Glassbox — File Analysis</title>\n<style>\n:root{color-scheme:dark;font-family:Inter,system-ui,Arial,sans-serif;background:#0b1020;color:#e7ecf5}*{box-sizing:border-box}\nbody{margin:0;min-height:100vh;padding:50px 18px;background:radial-gradient(circle at top,#1b2c48,#0b1020 60%)}\nmain{max-width:960px;margin:auto}h1{font-size:3rem;letter-spacing:.14em;margin:0 0 8px}p{color:#b5c4da}\n.panel{background:#111c2e;border:1px solid #30405b;border-radius:20px;padding:28px;margin:26px 0;box-shadow:0 18px 45px #0004}\n.zone{display:block;border:2px dashed #6982ab;border-radius:16px;padding:50px 24px;text-align:center;cursor:pointer;transition:.2s}\n.zone.drag{border-color:#6cd9f5;background:#19334b}.zone strong{display:block;font-size:1.3rem}.zone small{color:#abc2dd}\ninput[type=file]{display:none}button{background:#4e9bfa;color:#071526;border:0;border-radius:12px;padding:13px 28px;font-weight:700;font-size:1rem;cursor:pointer}\nbutton:disabled{opacity:.55;cursor:wait}pre{white-space:pre-wrap;word-break:break-word;font-size:.87rem;line-height:1.55;background:#091120;padding:24px;border-radius:12px;max-height:65vh;overflow:auto}\n.notice{font-size:.9rem}.error{color:#ffb4b4}footer{font-size:.85rem;color:#8497af}\n</style></head><body><main>\n<h1>GLASSBOX</h1><p>See what a file does before you trust it.</p>\n<section class=\"panel\"><form method=\"post\" enctype=\"multipart/form-data\" id=\"uploadForm\">\n<label class=\"zone\" id=\"zone\" for=\"file\"><strong id=\"filename\">Drag &amp; drop a file here</strong><small>Or click to choose a file</small></label>\n<input id=\"file\" name=\"file\" type=\"file\" required>\n<p class=\"notice\">Files run only inside the configured QEMU sandbox. Analysis is serialized to protect VM state. Maximum upload: 30 MiB.</p>\n<button id=\"submit\" type=\"submit\">Analyze file</button><span id=\"working\" role=\"status\" aria-live=\"polite\"></span>\n</form></section>\n{% if error %}<section class=\"panel error\"><strong>Analysis failed</strong><p>{{ error }}</p></section>{% endif %}\n{% if report %}<section class=\"panel\"><h2>Analysis report</h2><pre>{{ report }}</pre></section>{% endif %}\n<footer>Heuristic results are not a guarantee of safety. Local-only prototype — do not expose the web server to untrusted networks.</footer>\n</main><script>\nconst zone=document.getElementById('zone'),file=document.getElementById('file'),name=document.getElementById('filename');\nconst form=document.getElementById('uploadForm'),button=document.getElementById('submit'),working=document.getElementById('working');\nfile.addEventListener('change',()=>{name.textContent=file.files[0]?.name||'Drag & drop a file here'});\nfor(const event of ['dragenter','dragover'])zone.addEventListener(event,e=>{e.preventDefault();zone.classList.add('drag')});\nfor(const event of ['dragleave','drop'])zone.addEventListener(event,e=>{e.preventDefault();zone.classList.remove('drag')});\nzone.addEventListener('drop',e=>{if(e.dataTransfer.files.length){file.files=e.dataTransfer.files;name.textContent=file.files[0].name}});\nform.addEventListener('submit',e=>{if(!file.files.length){e.preventDefault();return}button.disabled=true;working.textContent=' Analyzing in sandbox… This may take a while.'});\n</script></body></html>"
-
 @app.route("/", methods=["GET", "POST"])
 def index():
     if request.method == "GET":
-        return render_template_string(HTML, report=None, error=None)
+        return render_template("index.html", report=None, error=None)
     selected_os = request.form.get("os", "linux")
     if selected_os not in ("linux", "windows", "macos"):
-        return render_template_string(HTML, report=None, error="Invalid OS selection."), 400
+        return render_template("index.html", report=None, error="Invalid OS selection."), 400
     if selected_os != "linux":
-        return render_template_string(HTML, report=None, error="Only Linux ARM64 is currently supported by the QEMU backend."), 400
+        return render_template("index.html", report=None, error="Only Linux ARM64 is currently supported by the QEMU backend."), 400
     uploaded = request.files.get("file")
     if uploaded is None or not uploaded.filename:
-        return render_template_string(HTML, report=None, error="Choose a file to analyze."), 400
+        return render_template("index.html", report=None, error="Choose a file to analyze."), 400
     # Hard cap is enforced by Flask; avoid displaying any private server paths.
     if not ANALYSIS_LOCK.acquire(blocking=False):
-        return render_template_string(HTML, report=None, error="Another analysis is running. Try again shortly."), 409
+        return render_template("index.html", report=None, error="Another analysis is running. Try again shortly."), 409
     try:
         _ANALYSIS_MESSAGES.clear()
         safe_name = safe_filename(Path(uploaded.filename).name)
@@ -1878,16 +1876,16 @@ def index():
                 inspect_zip(local_path)
             boot_sandbox()
             process_selected_file(local_path, safe_name)
-        return render_template_string(HTML, report="\n".join(_ANALYSIS_MESSAGES), error=None)
+        return render_template("index.html", report="\n".join(_ANALYSIS_MESSAGES), error=None)
     except Exception as exc:
         # Preserve detailed sandbox diagnostics in the report for local use.
-        return render_template_string(HTML, report="\n".join(_ANALYSIS_MESSAGES), error=str(exc)), 500
+        return render_template("index.html", report="\n".join(_ANALYSIS_MESSAGES), error=str(exc)), 500
     finally:
         ANALYSIS_LOCK.release()
 
 @app.errorhandler(RequestEntityTooLarge)
 def too_large(exc):
-    return render_template_string(HTML, report=None, error="File exceeds 30 MiB upload limit."), 413
+    return render_template("index.html", report=None, error="File exceeds 30 MiB upload limit."), 413
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=True, use_reloader=False)
