@@ -1,5 +1,6 @@
 """Boot the Windows 11 ARM64 installer with persistent UEFI and TPM 2.0."""
 import argparse
+import contextlib
 import os
 from pathlib import Path
 import shutil
@@ -27,7 +28,7 @@ def firmware():
     raise FileNotFoundError("ARM64 UEFI firmware missing. Install qemu-efi-aarch64 / AAVMF.")
 
 
-def boot_windows(iso=None, memory_mb=4096, cpus=4):
+def boot_windows(iso=None, memory_mb=4096, cpus=4, disposable=False):
     if not DISK.is_file():
         raise FileNotFoundError(f"Missing existing Windows disk: {DISK}")
     for binary in ("qemu-system-aarch64", "swtpm"):
@@ -53,6 +54,24 @@ def boot_windows(iso=None, memory_mb=4096, cpus=4):
         )
     accel = "kvm" if os.uname().machine.lower() in ("aarch64", "arm64") and Path("/dev/kvm").exists() else "tcg"
     cpu = "host" if accel == "kvm" else "cortex-a72"
+    # Copy disk and state into an automatically cleaned temporary directory.
+    # Do not launch another VM against the base disk/state at the same time.
+    with contextlib.ExitStack() as stack:
+        run_disk = DISK
+        if disposable:
+            scratch = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="glassbox_windows_")))
+            run_disk = scratch / "windows.qcow2"
+            shutil.copy2(DISK, run_disk)
+            copied_state = scratch / "state"
+            shutil.copytree(STATE, copied_state, ignore=shutil.ignore_patterns("*.sock"))
+            tpm_state = copied_state / "tpm"
+            tpm_state.mkdir(exist_ok=True)
+            vars_file = copied_state / "uefi_vars.fd"
+            socket_path = copied_state / "swtpm.sock"
+        return _launch(iso, memory_mb, cpus, accel, cpu, code, vars_file, tpm_state, socket_path, run_disk)
+
+
+def _launch(iso, memory_mb, cpus, accel, cpu, code, vars_file, tpm_state, socket_path, run_disk):
     tpm = subprocess.Popen([
         "swtpm", "socket", "--tpm2", "--tpmstate", f"dir={tpm_state}",
         "--ctrl", f"type=unixio,path={socket_path}", "--flags", "not-need-init"
@@ -74,7 +93,7 @@ def boot_windows(iso=None, memory_mb=4096, cpus=4):
             "-chardev", f"socket,id=chrtpm,path={socket_path}",
             "-tpmdev", "emulator,id=tpm0,chardev=chrtpm",
             "-device", "tpm-tis-device,tpmdev=tpm0",
-            "-drive", f"if=none,file={DISK},format=qcow2,id=system",
+            "-drive", f"if=none,file={run_disk},format=qcow2,id=system",
             "-device", "qemu-xhci", "-device", "usb-tablet",
             "-device", "nvme,drive=system,serial=GLASSBOX001",
             "-device", "usb-kbd", "-device", "ramfb",
@@ -104,5 +123,6 @@ if __name__ == "__main__":
     parser.add_argument("--iso", type=Path)
     parser.add_argument("--memory", type=int, default=4096)
     parser.add_argument("--cpus", type=int, default=4)
+    parser.add_argument("--disposable", action="store_true", help="Discard disk, UEFI and TPM changes after VM exits")
     args = parser.parse_args()
-    boot_windows(args.iso, args.memory, args.cpus)
+    boot_windows(args.iso, args.memory, args.cpus, args.disposable)
