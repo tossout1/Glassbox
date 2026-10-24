@@ -134,3 +134,24 @@ Never commit `*.qcow2`, VM state, `uefi_vars.fd`, `*.permall`, `*.lock`, SSH pri
 3. Connect Windows analysis to Flask's OS selection and validate end-to-end behavior.
 4. Investigate supported macOS virtualization separately.
 5. Add automated tests and explicit cleanup/reset for each analysis run.
+
+
+## Glassbox's own neural report model (experimental)
+
+The CAC Linux report pipeline uses `glassbox_nn.py`, a small PyTorch neural
+classifier trained from scratch on **synthetic labeled feature combinations**.
+It is not a pretrained language model and has not been validated against real
+malware datasets. The generated two-sentence explanation combines its predicted
+category with directly extracted report indicators; the full report remains
+visible for verification.
+
+After installing requirements, train the model once on the Raspberry Pi:
+
+```bash
+python3 glassbox_nn.py --train
+python3 main.py
+```
+
+This writes `models/glassbox_nn.pt` locally. If the weights are absent or AI
+is disabled, Glassbox displays the detailed report without a neural summary.
+The model never downloads weights and does not guarantee that a file is safe.
