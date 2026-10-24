@@ -173,7 +173,7 @@
                 </select>
 
                 <p class="notice" id="osNotice" role="status">
-                    Linux ARM64 analysis is available; Windows and macOS require additional VM setup.
+                    Linux ARM64 analysis is available. macOS requires a Mac host and additional VM setup.
                 </p>
 
                 <p class="notice">
@@ -265,7 +265,9 @@
         os.addEventListener("change", (e) => {
             osNotice.textContent = e.target.value === "linux"
                 ? "Linux ARM64 analysis is available."
-                : "This operating system is not yet supported by the analysis backend.";
+                : e.target.value === "macos"
+                    ? "macOS analysis is available only when Glassbox runs on a compatible Mac. The macOS VM must be configured first."
+                    : "Windows analysis is not yet supported by the backend.";
         });
 
         // Upload asynchronously, then poll for real analysis milestones.
