@@ -7,3 +7,4 @@ uefi_vars.fd
 .lock
 tpm2-00.permall
 __pycache__/
+*.pt
