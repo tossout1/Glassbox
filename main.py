@@ -1,23 +1,21 @@
-import tkinter as tk
-from tkinter import filedialog
-from tkinterdnd2 import DND_FILES, TkinterDnD
-
-import shutil
-import platform
-import subprocess
-from pathlib import Path, PurePosixPath
-import time
+"""Glassbox Flask web frontend backed by its existing QEMU analysis engine."""
 import atexit
+import platform
+import shlex
+import shutil
 import signal
+import stat
+import subprocess
 import sys
 import tarfile
+import tempfile
+import threading
+import time
 import zipfile
-import stat
-import shlex
+from pathlib import Path, PurePosixPath
+from flask import Flask, render_template_string, request
+from werkzeug.exceptions import RequestEntityTooLarge
 
-
-# ============================================================
-# CONFIGURATION
 # ============================================================
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -45,8 +43,7 @@ MAX_ZIP_SINGLE_FILE = 25 * 1024 * 1024
 vm = None
 
 
-# ============================================================
-# VM CLEANUP
+
 # ============================================================
 
 def stop_vm():
@@ -82,93 +79,18 @@ signal.signal(signal.SIGINT, handle_exit)
 signal.signal(signal.SIGTERM, handle_exit)
 
 
-# ============================================================
-# GUI
-# ============================================================
 
-window = TkinterDnD.Tk()
+# Only one analysis may use the shared VM and its fixed workspace paths at once.
+ANALYSIS_LOCK = threading.Lock()
+_ANALYSIS_MESSAGES = []
+_BOOTED = False
+app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
+app.config["TRUSTED_HOSTS"] = ["localhost", "127.0.0.1"]
 
-window.title("Glassbox")
-window.geometry("800x650")
+def add_text(value=""):
+    _ANALYSIS_MESSAGES.append(str(value))
 
-window.selected_file = None
-
-
-title_label = tk.Label(
-    window,
-    text="GLASSBOX",
-    font=("Arial", 26, "bold")
-)
-
-title_label.pack(
-    pady=(20, 5)
-)
-
-
-subtitle_label = tk.Label(
-    window,
-    text="See what a file does before you trust it.",
-    font=("Arial", 12)
-)
-
-subtitle_label.pack(
-    pady=(0, 15)
-)
-
-
-drop_zone = tk.Label(
-    window,
-    text=(
-        "Drag & Drop a File Here\n\n"
-        "or click here to select a file"
-    ),
-    font=("Arial", 16),
-    height=6,
-    relief="groove",
-    borderwidth=2,
-    cursor="hand2"
-)
-
-drop_zone.pack(
-    padx=30,
-    pady=10,
-    fill=tk.X
-)
-
-
-display = tk.Text(
-    window,
-    font=("Courier", 11),
-    wrap=tk.WORD,
-    state="disabled"
-)
-
-display.pack(
-    padx=30,
-    pady=(10, 20),
-    fill=tk.BOTH,
-    expand=True
-)
-
-
-def add_text(text=""):
-
-    display.config(state="normal")
-
-    display.insert(
-        tk.END,
-        str(text) + "\n"
-    )
-
-    display.see(tk.END)
-
-    display.config(state="disabled")
-
-    window.update_idletasks()
-
-
-# ============================================================
-# SSH
 # ============================================================
 
 def ssh_base():
@@ -1627,475 +1549,340 @@ def analyze_zip(
     )
 
 
-# ============================================================
-# PROCESS DROPPED FILE
-# ============================================================
 
-def process_selected_file(path):
+def process_selected_file(local_path, original_name):
+    """Analyze a saved upload without executing any submitted code on the host."""
+    safe_name = safe_filename(original_name)
+    vm_run(
+        f"rm -rf {shlex.quote(REMOTE_INPUT)} {shlex.quote(REMOTE_WORKSPACE)} "
+        f"&& mkdir -p {shlex.quote(REMOTE_INPUT)}"
+    )
+    # Staging path has an intentionally simple name for scp remote shell safety.
+    stage_path = local_path.parent / (".glassbox_" + safe_name)
+    shutil.copyfile(local_path, stage_path)
+    try:
+        add_text("Copying file into isolated VM...")
+        scp_to_vm(stage_path, REMOTE_INPUT)
+    finally:
+        stage_path.unlink(missing_ok=True)
+    remote_file = REMOTE_INPUT + "/" + stage_path.name
+    add_text("File transferred.")
+    if zipfile.is_zipfile(local_path):
+        analyze_zip(local_path, remote_file)
+    else:
+        analyze_normal_file(local_path, remote_file)
 
-    local_path = Path(path)
-
-    if not local_path.is_file():
-
-        add_text(
-            "Please select a file."
-        )
-
+def boot_sandbox():
+    """Start the original ARM64 Linux sandbox once, on the first analysis."""
+    global vm, _BOOTED
+    if _BOOTED and vm is not None and vm.poll() is None:
         return
+    stop_vm()
+    _BOOTED = False
+    # ============================================================
 
-    window.selected_file = local_path
+    add_text(
+        "Detecting computer..."
+    )
 
-    drop_zone.config(
-        text=(
-            f"{local_path.name}\n\n"
-            "Analyzing..."
+    system = platform.system()
+    arch = platform.machine().lower()
+
+    add_text(
+        f"Host: {system} / {arch}"
+    )
+
+
+    # ============================================================
+    # CURRENT TESTED CONFIGURATION
+    # ============================================================
+
+    if system != "Linux":
+
+        raise RuntimeError(
+            "Current hackathon prototype is "
+            "configured for Linux."
         )
+
+
+    if arch not in (
+        "arm64",
+        "aarch64",
+    ):
+
+        raise RuntimeError(
+            "Current hackathon prototype is "
+            "configured for ARM64."
+        )
+
+
+    qemu = "qemu-system-aarch64"
+
+    qcow2_file = (
+        BASE_DIR /
+        "debian-12-genericcloud-arm64.qcow2"
     )
 
-    add_text("")
+    firmware = Path(
+        "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
+    )
+
+
+    # ============================================================
+    # CHECK REQUIRED COMPONENTS
+    # ============================================================
+
+    required_paths = [
+        qcow2_file,
+        SEED_FILE,
+        PAYLOAD_PATH,
+        SSH_KEY,
+        firmware,
+    ]
+
+    for required in required_paths:
+
+        if not required.exists():
+
+            raise RuntimeError(
+                f"Required file missing: "
+                f"{required}"
+            )
+
+
+    if shutil.which(qemu) is None:
+
+        raise RuntimeError(
+            f"{qemu} is not installed."
+        )
+
+
+    # ============================================================
+    # QEMU COMMAND
+    # ============================================================
+
+    cmd = [
+        qemu,
+
+        "-accel",
+        "kvm",
+
+        "-M",
+        "virt",
+
+        "-cpu",
+        "host",
+
+        "-m",
+        "4096",
+
+        "-smp",
+        "4",
+
+        "-bios",
+        str(firmware),
+
+        # Discard disk changes when VM exits
+        "-snapshot",
+
+        "-drive",
+        (
+            f"if=none,"
+            f"file={qcow2_file},"
+            f"format=qcow2,"
+            f"id=hd0"
+        ),
+
+        "-device",
+        "virtio-blk-device,drive=hd0",
+
+        "-drive",
+        (
+            f"if=none,"
+            f"file={SEED_FILE},"
+            f"format=raw,"
+            f"id=seed0"
+        ),
+
+        "-device",
+        "virtio-blk-device,drive=seed0",
+
+        # Host can SSH in.
+        # Guest-initiated external networking is restricted.
+        "-nic",
+        (
+            "user,"
+            "restrict=on,"
+            "hostfwd=tcp:127.0.0.1:2222-:22"
+        ),
+
+        "-nographic",
+    ]
+
+
+    # ============================================================
+    # START VM
+    # ============================================================
+
     add_text(
-        "=" * 60
+        "Starting isolated virtual machine..."
+    )
+
+    vm = subprocess.Popen(
+        cmd,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True
     )
 
     add_text(
-        f"Submitted: {local_path.name}"
+        f"VM PID: {vm.pid}"
+    )
+
+
+    # ============================================================
+    # WAIT FOR VM
+    # ============================================================
+
+    wait_for_vm()
+
+
+    # ============================================================
+    # PREPARE SYNTHETIC HOME
+    # ============================================================
+
+    add_text(
+        "Preparing synthetic environment..."
+    )
+
+    vm_run(
+        f"sudo mkdir -p "
+        f"{shlex.quote(SYNTHETIC_HOME)}"
+    )
+
+    vm_run(
+        f"sudo chown sandbox:sandbox "
+        f"{shlex.quote(SYNTHETIC_HOME)}"
+    )
+
+
+    # ============================================================
+    # PACKAGE SYNTHETIC DATA
+    # ============================================================
+
+    archive_path = (
+        BASE_DIR /
+        ".glassbox_synthetic.tar"
+    )
+
+    add_text(
+        "Loading synthetic files..."
     )
 
     try:
 
-        # Clear old input
+        with tarfile.open(
+            archive_path,
+            "w"
+        ) as archive:
+
+            for item in PAYLOAD_PATH.iterdir():
+
+                archive.add(
+                    item,
+                    arcname=item.name
+                )
+
+        scp_to_vm(
+            archive_path,
+            "/tmp"
+        )
+
         vm_run(
             (
-                f"rm -rf "
-                f"{shlex.quote(REMOTE_INPUT)} "
-                f"{shlex.quote(REMOTE_WORKSPACE)} "
-                f"&& mkdir -p "
-                f"{shlex.quote(REMOTE_INPUT)}"
+                "sudo tar -xf "
+                "/tmp/.glassbox_synthetic.tar "
+                f"-C "
+                f"{shlex.quote(SYNTHETIC_HOME)}"
             )
         )
 
-        safe_name = safe_filename(
-            local_path.name
-        )
-
-        temporary_copy = (
-            BASE_DIR /
-            f".glassbox_{safe_name}"
-        )
-
-        # Make filename predictable/safe for SCP
-        shutil.copy2(
-            local_path,
-            temporary_copy
-        )
-
-        add_text(
-            "Copying file into isolated VM..."
-        )
-
-        try:
-
-            scp_to_vm(
-                temporary_copy,
-                REMOTE_INPUT
-            )
-
-        finally:
-
-            if temporary_copy.exists():
-
-                temporary_copy.unlink()
-
-        remote_file = (
-            REMOTE_INPUT
-            + "/"
-            + temporary_copy.name
-        )
-
-        add_text(
-            "File transferred."
-        )
-
-        # ZIP archive
-        if zipfile.is_zipfile(
-            local_path
-        ):
-
-            analyze_zip(
-                local_path,
-                remote_file
-            )
-
-        else:
-
-            analyze_normal_file(
-                local_path,
-                remote_file
-            )
-
-        drop_zone.config(
-            text=(
-                f"{local_path.name}\n\n"
-                "Analysis complete"
+        vm_run(
+            (
+                "sudo chown -R "
+                "sandbox:sandbox "
+                f"{shlex.quote(SYNTHETIC_HOME)}"
             )
         )
 
-    except Exception as error:
-
-        add_text("")
-        add_text(
-            "ANALYSIS ERROR:"
+        vm_run(
+            "rm -f "
+            "/tmp/.glassbox_synthetic.tar"
         )
 
-        add_text(
-            str(error)
-        )
+    finally:
 
-        drop_zone.config(
-            text=(
-                "Analysis failed\n\n"
-                "Drop another file to try again"
-            )
-        )
+        if archive_path.exists():
 
+            archive_path.unlink()
 
-def file_dropped(event):
 
-    files = window.tk.splitlist(
-        event.data
-    )
-
-    if not files:
-        return
-
-    # First file only for the MVP
-    process_selected_file(
-        files[0]
-    )
-
-
-def choose_file(event=None):
-
-    selected = filedialog.askopenfilename(
-        title="Choose a file to analyze"
-    )
-
-    if selected:
-
-        process_selected_file(
-            selected
-        )
-
-
-drop_zone.drop_target_register(
-    DND_FILES
-)
-
-drop_zone.dnd_bind(
-    "<<Drop>>",
-    file_dropped
-)
-
-drop_zone.bind(
-    "<Button-1>",
-    choose_file
-)
-
-
-# ============================================================
-# HOST DETECTION
-# ============================================================
-
-add_text(
-    "Detecting computer..."
-)
-
-system = platform.system()
-arch = platform.machine().lower()
-
-add_text(
-    f"Host: {system} / {arch}"
-)
-
-
-# ============================================================
-# CURRENT TESTED CONFIGURATION
-# ============================================================
-
-if system != "Linux":
-
-    raise RuntimeError(
-        "Current hackathon prototype is "
-        "configured for Linux."
-    )
-
-
-if arch not in (
-    "arm64",
-    "aarch64",
-):
-
-    raise RuntimeError(
-        "Current hackathon prototype is "
-        "configured for ARM64."
-    )
-
-
-qemu = "qemu-system-aarch64"
-
-qcow2_file = (
-    BASE_DIR /
-    "debian-12-genericcloud-arm64.qcow2"
-)
-
-firmware = Path(
-    "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
-)
-
-
-# ============================================================
-# CHECK REQUIRED COMPONENTS
-# ============================================================
-
-required_paths = [
-    qcow2_file,
-    SEED_FILE,
-    PAYLOAD_PATH,
-    SSH_KEY,
-    firmware,
-]
-
-for required in required_paths:
-
-    if not required.exists():
-
-        raise RuntimeError(
-            f"Required file missing: "
-            f"{required}"
-        )
-
-
-if shutil.which(qemu) is None:
-
-    raise RuntimeError(
-        f"{qemu} is not installed."
-    )
-
-
-# ============================================================
-# QEMU COMMAND
-# ============================================================
-
-cmd = [
-    qemu,
-
-    "-accel",
-    "kvm",
-
-    "-M",
-    "virt",
-
-    "-cpu",
-    "host",
-
-    "-m",
-    "4096",
-
-    "-smp",
-    "4",
-
-    "-bios",
-    str(firmware),
-
-    # Discard disk changes when VM exits
-    "-snapshot",
-
-    "-drive",
-    (
-        f"if=none,"
-        f"file={qcow2_file},"
-        f"format=qcow2,"
-        f"id=hd0"
-    ),
-
-    "-device",
-    "virtio-blk-device,drive=hd0",
-
-    "-drive",
-    (
-        f"if=none,"
-        f"file={SEED_FILE},"
-        f"format=raw,"
-        f"id=seed0"
-    ),
-
-    "-device",
-    "virtio-blk-device,drive=seed0",
-
-    # Host can SSH in.
-    # Guest-initiated external networking is restricted.
-    "-nic",
-    (
-        "user,"
-        "restrict=on,"
-        "hostfwd=tcp:127.0.0.1:2222-:22"
-    ),
-
-    "-nographic",
-]
-
-
-# ============================================================
-# START VM
-# ============================================================
-
-add_text(
-    "Starting isolated virtual machine..."
-)
-
-vm = subprocess.Popen(
-    cmd,
-    stdin=subprocess.DEVNULL,
-    stdout=subprocess.DEVNULL,
-    stderr=subprocess.DEVNULL,
-    text=True
-)
-
-add_text(
-    f"VM PID: {vm.pid}"
-)
-
-
-# ============================================================
-# WAIT FOR VM
-# ============================================================
-
-wait_for_vm()
-
-
-# ============================================================
-# PREPARE SYNTHETIC HOME
-# ============================================================
-
-add_text(
-    "Preparing synthetic environment..."
-)
-
-vm_run(
-    f"sudo mkdir -p "
-    f"{shlex.quote(SYNTHETIC_HOME)}"
-)
-
-vm_run(
-    f"sudo chown sandbox:sandbox "
-    f"{shlex.quote(SYNTHETIC_HOME)}"
-)
-
-
-# ============================================================
-# PACKAGE SYNTHETIC DATA
-# ============================================================
-
-archive_path = (
-    BASE_DIR /
-    ".glassbox_synthetic.tar"
-)
-
-add_text(
-    "Loading synthetic files..."
-)
-
-try:
-
-    with tarfile.open(
-        archive_path,
-        "w"
-    ) as archive:
-
-        for item in PAYLOAD_PATH.iterdir():
-
-            archive.add(
-                item,
-                arcname=item.name
-            )
-
-    scp_to_vm(
-        archive_path,
-        "/tmp"
-    )
+    # ============================================================
+    # READY
+    # ============================================================
 
     vm_run(
-        (
-            "sudo tar -xf "
-            "/tmp/.glassbox_synthetic.tar "
-            f"-C "
-            f"{shlex.quote(SYNTHETIC_HOME)}"
-        )
+        f"mkdir -p "
+        f"{shlex.quote(REMOTE_INPUT)} "
+        f"{shlex.quote(REMOTE_WORKSPACE)}"
     )
 
-    vm_run(
-        (
-            "sudo chown -R "
-            "sandbox:sandbox "
-            f"{shlex.quote(SYNTHETIC_HOME)}"
-        )
+    add_text("")
+    add_text(
+        "Glassbox is ready."
     )
-
-    vm_run(
-        "rm -f "
-        "/tmp/.glassbox_synthetic.tar"
-    )
-
-finally:
-
-    if archive_path.exists():
-
-        archive_path.unlink()
-
-
-# ============================================================
-# READY
-# ============================================================
-
-vm_run(
-    f"mkdir -p "
-    f"{shlex.quote(REMOTE_INPUT)} "
-    f"{shlex.quote(REMOTE_WORKSPACE)}"
-)
-
-add_text("")
-add_text(
-    "Glassbox is ready."
-)
-
-add_text(
-    "Drop a file above to analyze it."
-)
-
-
-# ============================================================
-# WINDOW CLOSE
-# ============================================================
-
-def close_application():
 
     add_text(
-        "Shutting down sandbox..."
+        "Drop a file above to analyze it."
     )
 
-    stop_vm()
-
-    window.destroy()
 
 
-window.protocol(
-    "WM_DELETE_WINDOW",
-    close_application
-)
+    _BOOTED = True
 
+HTML = "<!doctype html>\n<html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n<title>Glassbox — File Analysis</title>\n<style>\n:root{color-scheme:dark;font-family:Inter,system-ui,Arial,sans-serif;background:#0b1020;color:#e7ecf5}*{box-sizing:border-box}\nbody{margin:0;min-height:100vh;padding:50px 18px;background:radial-gradient(circle at top,#1b2c48,#0b1020 60%)}\nmain{max-width:960px;margin:auto}h1{font-size:3rem;letter-spacing:.14em;margin:0 0 8px}p{color:#b5c4da}\n.panel{background:#111c2e;border:1px solid #30405b;border-radius:20px;padding:28px;margin:26px 0;box-shadow:0 18px 45px #0004}\n.zone{display:block;border:2px dashed #6982ab;border-radius:16px;padding:50px 24px;text-align:center;cursor:pointer;transition:.2s}\n.zone.drag{border-color:#6cd9f5;background:#19334b}.zone strong{display:block;font-size:1.3rem}.zone small{color:#abc2dd}\ninput[type=file]{display:none}button{background:#4e9bfa;color:#071526;border:0;border-radius:12px;padding:13px 28px;font-weight:700;font-size:1rem;cursor:pointer}\nbutton:disabled{opacity:.55;cursor:wait}pre{white-space:pre-wrap;word-break:break-word;font-size:.87rem;line-height:1.55;background:#091120;padding:24px;border-radius:12px;max-height:65vh;overflow:auto}\n.notice{font-size:.9rem}.error{color:#ffb4b4}footer{font-size:.85rem;color:#8497af}\n</style></head><body><main>\n<h1>GLASSBOX</h1><p>See what a file does before you trust it.</p>\n<section class=\"panel\"><form method=\"post\" enctype=\"multipart/form-data\" id=\"uploadForm\">\n<label class=\"zone\" id=\"zone\" for=\"file\"><strong id=\"filename\">Drag &amp; drop a file here</strong><small>Or click to choose a file</small></label>\n<input id=\"file\" name=\"file\" type=\"file\" required>\n<p class=\"notice\">Files run only inside the configured QEMU sandbox. Analysis is serialized to protect VM state. Maximum upload: 30 MiB.</p>\n<button id=\"submit\" type=\"submit\">Analyze file</button><span id=\"working\" role=\"status\" aria-live=\"polite\"></span>\n</form></section>\n{% if error %}<section class=\"panel error\"><strong>Analysis failed</strong><p>{{ error }}</p></section>{% endif %}\n{% if report %}<section class=\"panel\"><h2>Analysis report</h2><pre>{{ report }}</pre></section>{% endif %}\n<footer>Heuristic results are not a guarantee of safety. Local-only prototype — do not expose the web server to untrusted networks.</footer>\n</main><script>\nconst zone=document.getElementById('zone'),file=document.getElementById('file'),name=document.getElementById('filename');\nconst form=document.getElementById('uploadForm'),button=document.getElementById('submit'),working=document.getElementById('working');\nfile.addEventListener('change',()=>{name.textContent=file.files[0]?.name||'Drag & drop a file here'});\nfor(const event of ['dragenter','dragover'])zone.addEventListener(event,e=>{e.preventDefault();zone.classList.add('drag')});\nfor(const event of ['dragleave','drop'])zone.addEventListener(event,e=>{e.preventDefault();zone.classList.remove('drag')});\nzone.addEventListener('drop',e=>{if(e.dataTransfer.files.length){file.files=e.dataTransfer.files;name.textContent=file.files[0].name}});\nform.addEventListener('submit',e=>{if(!file.files.length){e.preventDefault();return}button.disabled=true;working.textContent=' Analyzing in sandbox… This may take a while.'});\n</script></body></html>"
 
-# ============================================================
-# GUI LOOP
-# ============================================================
+@app.route("/", methods=["GET", "POST"])
+def index():
+    if request.method == "GET":
+        return render_template_string(HTML, report=None, error=None)
+    uploaded = request.files.get("file")
+    if uploaded is None or not uploaded.filename:
+        return render_template_string(HTML, report=None, error="Choose a file to analyze."), 400
+    # Hard cap is enforced by Flask; avoid displaying any private server paths.
+    if not ANALYSIS_LOCK.acquire(blocking=False):
+        return render_template_string(HTML, report=None, error="Another analysis is running. Try again shortly."), 409
+    try:
+        _ANALYSIS_MESSAGES.clear()
+        safe_name = safe_filename(Path(uploaded.filename).name)
+        with tempfile.TemporaryDirectory(prefix="glassbox_") as tmp:
+            local_path = Path(tmp) / safe_name
+            uploaded.save(local_path)
+            if zipfile.is_zipfile(local_path):
+                inspect_zip(local_path)
+            boot_sandbox()
+            process_selected_file(local_path, safe_name)
+        return render_template_string(HTML, report="\n".join(_ANALYSIS_MESSAGES), error=None)
+    except Exception as exc:
+        # Preserve detailed sandbox diagnostics in the report for local use.
+        return render_template_string(HTML, report="\n".join(_ANALYSIS_MESSAGES), error=str(exc)), 500
+    finally:
+        ANALYSIS_LOCK.release()
 
-window.mainloop()
+@app.errorhandler(RequestEntityTooLarge)
+def too_large(exc):
+    return render_template_string(HTML, report=None, error="File exceeds 30 MiB upload limit."), 413
+
+if __name__ == "__main__":
+    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True, use_reloader=False)
