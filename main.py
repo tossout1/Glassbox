@@ -1656,6 +1656,15 @@ def run_analysis(job_id, local_path, original_name, temp_dir, selected_os):
                 raise RuntimeError((result.stderr or result.stdout)[-3000:]
                                    or "Worker failed.")
             report = result.stdout
+            # Run the local AI model on the completed report before publishing.
+            # Keep the underlying observations available for verification.
+            set_progress(job_id, 95, "Summarizing findings with local AI")
+            summary = summarize_report(report)
+            if summary:
+                report = "AI SUMMARY\n" + summary + "\n\nDETAILED ANALYSIS\n" + report
+            else:
+                report = ("AI summary unavailable (model disabled or not cached).\n\n"
+                          "DETAILED ANALYSIS\n" + report)
             with JOBS_LOCK:
                 JOBS[job_id].update(percent=100, stage="Analysis complete",
                                     done=True, report=report)
