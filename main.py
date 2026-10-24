@@ -1,4 +1,8 @@
-"""Glassbox Flask web frontend backed by its existing QEMU analysis engine."""
+"""Flask interface and isolated QEMU-based file analyzer for Glassbox.
+
+The VM runs on a Linux ARM64 host. Uploaded files are analyzed inside the
+VM, not executed by the Flask server on the host.
+"""
 import atexit
 import platform
 import shlex
@@ -13,6 +17,7 @@ import threading
 import time
 import zipfile
 from pathlib import Path, PurePosixPath
+
 from flask import Flask, render_template, request
 from werkzeug.exceptions import RequestEntityTooLarge
 
@@ -42,8 +47,6 @@ MAX_ZIP_SINGLE_FILE = 25 * 1024 * 1024
 
 vm = None
 
-
-
 # ============================================================
 
 def stop_vm():
@@ -67,18 +70,14 @@ def stop_vm():
 
         print("VM stopped.")
 
-
 def handle_exit(signum, frame):
     stop_vm()
     sys.exit(0)
-
 
 atexit.register(stop_vm)
 
 signal.signal(signal.SIGINT, handle_exit)
 signal.signal(signal.SIGTERM, handle_exit)
-
-
 
 # Only one analysis may use the shared VM and its fixed workspace paths at once.
 ANALYSIS_LOCK = threading.Lock()
@@ -89,6 +88,7 @@ app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
 app.config["TRUSTED_HOSTS"] = ["localhost", "127.0.0.1"]
 
 def add_text(value=""):
+    """Append a line to the current analysis report."""
     _ANALYSIS_MESSAGES.append(str(value))
 
 # ============================================================
@@ -120,7 +120,6 @@ def ssh_base():
         f"{SSH_USER}@{SSH_HOST}",
     ]
 
-
 def vm_run(command, check=True, timeout=None):
 
     try:
@@ -147,7 +146,6 @@ def vm_run(command, check=True, timeout=None):
         )
 
     return result
-
 
 def wait_for_vm(timeout=120, interval=2):
 
@@ -185,10 +183,7 @@ def wait_for_vm(timeout=120, interval=2):
         "VM SSH did not become ready."
     )
 
-
-# ============================================================
-# SCP
-# ============================================================
+# --- SCP ---
 
 def scp_to_vm(local_file, remote_directory):
 
@@ -224,10 +219,7 @@ def scp_to_vm(local_file, remote_directory):
             f"{result.stderr.strip()}"
         )
 
-
-# ============================================================
-# SAFE FILE NAME
-# ============================================================
+# --- SAFE FILE NAME ---
 
 def safe_filename(filename):
 
@@ -250,10 +242,7 @@ def safe_filename(filename):
 
     return cleaned
 
-
-# ============================================================
-# ZIP VALIDATION
-# ============================================================
+# --- ZIP VALIDATION ---
 
 def inspect_zip(local_path):
 
@@ -346,10 +335,7 @@ def inspect_zip(local_path):
 
     return files, total_size
 
-
-# ============================================================
-# ZIP ENTRYPOINT
-# ============================================================
+# --- ZIP ENTRYPOINT ---
 
 def choose_zip_entrypoint(files):
 
@@ -427,10 +413,7 @@ def choose_zip_entrypoint(files):
 
     return None
 
-
-# ============================================================
-# STATIC ANALYSIS
-# ============================================================
+# --- STATIC ANALYSIS ---
 
 def static_analysis(remote_file):
 
@@ -520,9 +503,7 @@ def static_analysis(remote_file):
         "text_preview": text_preview,
     }
 
-# ============================================================
-# FILE MANIFEST
-# ============================================================
+# --- FILE MANIFEST ---
 
 def create_manifest(output_file):
 
@@ -548,10 +529,7 @@ def create_manifest(output_file):
         check=False
     )
 
-
-# ============================================================
-# EXECUTION COMMAND
-# ============================================================
+# --- EXECUTION COMMAND ---
 
 def build_execution_command(remote_file):
 
@@ -673,10 +651,7 @@ def build_execution_command(remote_file):
 
     return None
 
-
-# ============================================================
-# BEHAVIOR EXECUTION
-# ============================================================
+# --- BEHAVIOR EXECUTION ---
 
 def execute_and_monitor(
     remote_file,
@@ -804,191 +779,7 @@ def execute_and_monitor(
         "trace": trace[-8000:],
     }
 
-
-# ============================================================
-# DISPLAY REPORT
-# ============================================================
-
-def calculate_safety_score(static, behavior):
-
-    score = 100
-    reasons = []
-
-    suspicious_strings = static.get("strings", "").lower()
-    trace = behavior.get("trace", "").lower()
-    changes = behavior.get("changes", "").lower()
-
-    # ========================================================
-    # STATIC INDICATORS
-    # ========================================================
-
-    dangerous_terms = {
-        "powershell": 15,
-        "/etc/passwd": 20,
-        "wget": 8,
-        "curl": 8,
-        "base64": 5,
-        "chmod": 6,
-        "chown": 6,
-        "subprocess": 5,
-        "os.system": 10,
-        "socket": 5,
-    }
-
-    static_penalty = 0
-
-    for term, penalty in dangerous_terms.items():
-
-        if term in suspicious_strings:
-
-            static_penalty += penalty
-
-            reasons.append(
-                f"- Suspicious reference detected: {term}"
-            )
-
-    score -= min(static_penalty, 40)
-
-
-    # ========================================================
-    # FILESYSTEM BEHAVIOR
-    # ========================================================
-
-    if behavior.get("changes"):
-
-        score -= 20
-
-        reasons.append(
-            "- File changed the synthetic environment"
-        )
-
-    else:
-
-        reasons.append(
-            "+ No synthetic files were changed"
-        )
-
-
-    # ========================================================
-    # SYSTEM TRACE
-    # ========================================================
-
-    if trace:
-
-        suspicious_trace_terms = [
-            "connect(",
-            "/etc/passwd",
-            "/etc/shadow",
-            "chmod",
-            "unlink",
-            "rename",
-        ]
-
-        trace_hits = 0
-
-        for term in suspicious_trace_terms:
-
-            if term in trace:
-
-                trace_hits += 1
-
-        if trace_hits > 0:
-
-            penalty = min(
-                trace_hits * 10,
-                30
-            )
-
-            score -= penalty
-
-            reasons.append(
-                f"- Detected {trace_hits} potentially "
-                f"suspicious system behaviors"
-            )
-
-        else:
-
-            reasons.append(
-                "+ No high-risk system calls detected"
-            )
-
-
-    # ========================================================
-    # EXECUTION RESULT
-    # ========================================================
-
-    if behavior.get("executed"):
-
-        returncode = behavior.get(
-            "returncode"
-        )
-
-        if returncode == 124:
-
-            score -= 10
-
-            reasons.append(
-                "- Program continued running until "
-                "the sandbox timeout"
-            )
-
-        elif returncode == 0:
-
-            reasons.append(
-                "+ Program exited normally"
-            )
-
-        elif returncode is not None:
-
-            score -= 5
-
-            reasons.append(
-                f"- Program exited with code {returncode}"
-            )
-
-    else:
-
-        reasons.append(
-            "+ File was inspected without executable behavior"
-        )
-
-
-    # ========================================================
-    # SUSPICIOUS STRINGS RESULT
-    # ========================================================
-
-    if not suspicious_strings:
-
-        reasons.append(
-            "+ No suspicious static strings detected"
-        )
-
-
-    # Keep within 0-100
-    score = max(
-        0,
-        min(100, score)
-    )
-
-
-    # ========================================================
-    # VERDICT
-    # ========================================================
-
-    if score >= 80:
-
-        verdict = "LIKELY SAFE"
-
-    elif score >= 55:
-
-        verdict = "CAUTION"
-
-    else:
-
-        verdict = "SUSPICIOUS"
-
-
-    return score, verdict, reasons
+# --- DISPLAY REPORT ---
 
 def calculate_safety_score(static, behavior):
 
@@ -1173,7 +964,6 @@ def show_report(
         f"SHA-256: {static['sha256']}"
     )
 
-
     # ========================================================
     # ZIP INFORMATION
     # ========================================================
@@ -1197,7 +987,6 @@ def show_report(
             f"{zip_info['entrypoint']}"
         )
 
-
     # ========================================================
     # STATIC FINDINGS
     # ========================================================
@@ -1212,7 +1001,6 @@ def show_report(
         add_text(
             static["strings"]
         )
-
 
     # ========================================================
     # BEHAVIOR
@@ -1327,7 +1115,6 @@ def show_report(
                 behavior["trace"]
             )
 
-
     # ========================================================
     # SAFETY SCORE
     # ========================================================
@@ -1380,9 +1167,7 @@ def show_report(
 
     add_text("=" * 60)
 
-# ============================================================
-# ANALYZE NORMAL FILE
-# ============================================================
+# --- ANALYZE NORMAL FILE ---
 
 def analyze_normal_file(
     local_path,
@@ -1408,10 +1193,7 @@ def analyze_normal_file(
         behavior
     )
 
-
-# ============================================================
-# ANALYZE ZIP
-# ============================================================
+# --- ANALYZE ZIP ---
 
 def analyze_zip(
     local_path,
@@ -1548,8 +1330,6 @@ def analyze_zip(
         }
     )
 
-
-
 def process_selected_file(local_path, original_name):
     """Analyze a saved upload without executing any submitted code on the host."""
     safe_name = safe_filename(original_name)
@@ -1592,7 +1372,6 @@ def boot_sandbox():
         f"Host: {system} / {arch}"
     )
 
-
     # ============================================================
     # CURRENT TESTED CONFIGURATION
     # ============================================================
@@ -1604,7 +1383,6 @@ def boot_sandbox():
             "configured for Linux."
         )
 
-
     if arch not in (
         "arm64",
         "aarch64",
@@ -1614,7 +1392,6 @@ def boot_sandbox():
             "Current hackathon prototype is "
             "configured for ARM64."
         )
-
 
     qemu = "qemu-system-aarch64"
 
@@ -1626,7 +1403,6 @@ def boot_sandbox():
     firmware = Path(
         "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
     )
-
 
     # ============================================================
     # CHECK REQUIRED COMPONENTS
@@ -1649,13 +1425,11 @@ def boot_sandbox():
                 f"{required}"
             )
 
-
     if shutil.which(qemu) is None:
 
         raise RuntimeError(
             f"{qemu} is not installed."
         )
-
 
     # ============================================================
     # QEMU COMMAND
@@ -1719,7 +1493,6 @@ def boot_sandbox():
         "-nographic",
     ]
 
-
     # ============================================================
     # START VM
     # ============================================================
@@ -1740,13 +1513,11 @@ def boot_sandbox():
         f"VM PID: {vm.pid}"
     )
 
-
     # ============================================================
     # WAIT FOR VM
     # ============================================================
 
     wait_for_vm()
-
 
     # ============================================================
     # PREPARE SYNTHETIC HOME
@@ -1765,7 +1536,6 @@ def boot_sandbox():
         f"sudo chown sandbox:sandbox "
         f"{shlex.quote(SYNTHETIC_HOME)}"
     )
-
 
     # ============================================================
     # PACKAGE SYNTHETIC DATA
@@ -1827,7 +1597,6 @@ def boot_sandbox():
 
             archive_path.unlink()
 
-
     # ============================================================
     # READY
     # ============================================================
@@ -1847,12 +1616,11 @@ def boot_sandbox():
         "Drop a file above to analyze it."
     )
 
-
-
     _BOOTED = True
 
 @app.route("/", methods=["GET", "POST"])
 def index():
+    """Render the upload page and process one submitted file at a time."""
     if request.method == "GET":
         return render_template("index.html", report=None, error=None)
     selected_os = request.form.get("os", "linux")
@@ -1885,6 +1653,7 @@ def index():
 
 @app.errorhandler(RequestEntityTooLarge)
 def too_large(exc):
+    """Show a friendly error for uploads exceeding the size limit."""
     return render_template("index.html", report=None, error="File exceeds 30 MiB upload limit."), 413
 
 if __name__ == "__main__":
