@@ -268,7 +268,7 @@
                 ? "Linux ARM64 analysis is available."
                 : e.target.value === "macos"
                     ? "macOS analysis is available only when Glassbox runs on a compatible Mac. The macOS VM must be configured first."
-                    : "Windows requires a configured Windows VM image before analysis can run.";
+                    : "Windows ARM64 VM setup is available, but Windows file analysis is not implemented yet.";
         });
 
         // Upload asynchronously, then poll for real analysis milestones.
