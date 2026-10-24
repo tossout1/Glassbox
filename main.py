@@ -1583,7 +1583,7 @@ def boot_sandbox():
         vm_run(
             (
                 "sudo tar -xf "
-                "/tmp/.glassbox_synthetic.tar "
+                f"{shlex.quote('/tmp/' + archive_path.name)} "
                 f"-C "
                 f"{shlex.quote(SYNTHETIC_HOME)}"
             )
@@ -1599,7 +1599,7 @@ def boot_sandbox():
 
         vm_run(
             "rm -f "
-            "/tmp/.glassbox_synthetic.tar"
+            shlex.quote("/tmp/" + archive_path.name)
         )
 
     finally:
