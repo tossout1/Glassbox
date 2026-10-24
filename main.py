@@ -1702,8 +1702,8 @@ def start_analysis():
     selected_os = request.form.get("os", "linux")
     if selected_os not in ("linux", "windows", "macos"):
         return jsonify(error="Invalid OS selection."), 400
-    if selected_os == "macos":
-        return jsonify(error="macOS analysis is not implemented yet."), 400
+    if selected_os != "linux":
+        return jsonify(error="Windows and macOS analysis are future goals. Select Linux."), 400
 
     uploaded = request.files.get("file")
     if uploaded is None or not uploaded.filename:
