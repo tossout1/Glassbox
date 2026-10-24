@@ -1597,10 +1597,7 @@ def boot_sandbox():
             )
         )
 
-        vm_run(
-            "rm -f "
-            shlex.quote("/tmp/" + archive_path.name)
-        )
+        vm_run("rm -f " + shlex.quote("/tmp/" + archive_path.name))
 
     finally:
 
