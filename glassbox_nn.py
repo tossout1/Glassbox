@@ -101,9 +101,16 @@ def summarize_report(report):
         if bits[9]: observations.append("reported errors")
         if not observations: observations.append("no specific high-risk indicators in the parsed report")
         detail = ", ".join(observations[:4])
+        score_match = re.search(
+            r"Estimated safety score:\s*(100|[1-9]?\\d)\s*%",
+            report, flags=re.IGNORECASE
+        )
+        score_text = (f"Glassbox assigned a heuristic safety score of {score_match.group(1)}%; "
+                      if score_match else
+                      "Glassbox did not provide a numeric safety score; ")
         return (f"The Glassbox analysis {status} and recorded {detail}. "
-                f"Its locally trained neural classifier categorized the report as {label}; "
-                "this is an experimental classification based on synthetic training examples, not proof of file safety.")
+                f"{score_text}its locally trained neural classifier categorized the report as {label} "
+                "(experimental assessment, not proof of file safety).")
     except (RuntimeError, OSError, ValueError, KeyError, TypeError) as exc:
         print(f"Glassbox neural summary unavailable: {exc}", file=__import__("sys").stderr)
         return None
