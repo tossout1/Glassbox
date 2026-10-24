@@ -114,6 +114,25 @@
             overflow: auto;
         }
 
+        .progress-panel {
+            margin-top: 20px;
+        }
+
+        .progress-track {
+            width: 100%;
+            height: 18px;
+            overflow: hidden;
+            background: #091120;
+            border-radius: 10px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            width: 0%;
+            background: #4e9bfa;
+            transition: width 0.35s ease;
+        }
+
         .notice {
             font-size: 0.9rem;
         }
@@ -165,10 +184,24 @@
 
                 <button id="submit" type="submit">Analyze file</button>
                 <span id="working" role="status" aria-live="polite"></span>
+                <div id="progressPanel" class="progress-panel" hidden>
+                    <div id="progressStage" role="status" aria-live="polite">Preparing analysis...</div>
+                    <div id="progressTrack" class="progress-track" role="progressbar"
+                         aria-label="Analysis progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+                        <div id="progressFill" class="progress-fill"></div>
+                    </div>
+                    <p id="progressPercent">0%</p>
+                    <p class="notice">Percentages represent analysis milestones, not elapsed time.</p>
+                </div>
             </form>
         </section>
 
-        <!-- Flask renders errors and reports after an analysis -->
+        <section id="resultPanel" class="panel" hidden>
+            <h2 id="resultHeading">Analysis report</h2>
+            <pre id="resultText"></pre>
+        </section>
+
+        <!-- Optional server-rendered messages -->
         {% if error %}
         <section class="panel error">
             <strong>Analysis failed</strong>
@@ -235,15 +268,80 @@
                 : "This operating system is not yet supported by the analysis backend.";
         });
 
-        // Disable the submit button while the analysis is running
-        form.addEventListener("submit", (e) => {
+        // Upload asynchronously, then poll for real analysis milestones.
+        const progressPanel = document.getElementById("progressPanel");
+        const progressTrack = document.getElementById("progressTrack");
+        const progressFill = document.getElementById("progressFill");
+        const progressPercent = document.getElementById("progressPercent");
+        const progressStage = document.getElementById("progressStage");
+        const resultPanel = document.getElementById("resultPanel");
+        const resultHeading = document.getElementById("resultHeading");
+        const resultText = document.getElementById("resultText");
+
+        function updateProgress(percent, stage) {
+            progressFill.style.width = percent + "%";
+            progressPercent.textContent = percent + "%";
+            progressTrack.setAttribute("aria-valuenow", percent);
+            progressStage.textContent = stage;
+        }
+
+        function showResult(report, error) {
+            resultPanel.hidden = false;
+            resultHeading.textContent = error ? "Analysis failed" : "Analysis report";
+            resultText.textContent = error
+                ? (error + (report ? "\\n\\n" + report : ""))
+                : report;
+            button.disabled = false;
+            working.textContent = "";
+        }
+
+        async function pollProgress(jobId) {
+            while (true) {
+                await new Promise((resolve) => setTimeout(resolve, 700));
+                const response = await fetch("/progress/" + encodeURIComponent(jobId));
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || "Could not retrieve progress.");
+                }
+
+                updateProgress(data.percent, data.stage);
+
+                if (data.done) {
+                    showResult(data.report, data.error);
+                    return;
+                }
+            }
+        }
+
+        form.addEventListener("submit", async (event) => {
+            event.preventDefault();
+
             if (!file.files.length) {
-                e.preventDefault();
                 return;
             }
 
             button.disabled = true;
-            working.textContent = " Analyzing in sandbox… This may take a while.";
+            resultPanel.hidden = true;
+            progressPanel.hidden = false;
+            updateProgress(0, "Uploading file...");
+            working.textContent = " Analysis in progress...";
+
+            try {
+                const response = await fetch("/analyze", {
+                    method: "POST",
+                    body: new FormData(form)
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || "Could not start analysis.");
+                }
+
+                await pollProgress(data.job_id);
+            } catch (error) {
+                showResult("", error.message);
+            }
         });
     </script>
 </body>
