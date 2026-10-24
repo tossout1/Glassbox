@@ -1640,18 +1640,20 @@ def run_analysis(job_id, local_path, original_name, temp_dir):
         process_selected_file(local_path, original_name)
         set_progress(job_id, 100, "Analysis complete")
         with JOBS_LOCK:
-            JOBS[job_id].update(done=True, report="\\n".join(_ANALYSIS_MESSAGES))
+            JOBS[job_id].update(done=True, report="\n".join(_ANALYSIS_MESSAGES))
     except Exception as exc:
         with JOBS_LOCK:
-            JOBS[job_id].update(done=True, error=str(exc), report="\\n".join(_ANALYSIS_MESSAGES))
+            JOBS[job_id].update(done=True, error=str(exc), report="\n".join(_ANALYSIS_MESSAGES))
     finally:
         temp_dir.cleanup()
         ANALYSIS_LOCK.release()
 
 
-@app.route("/", methods=["GET"])
+@app.route("/", methods=["GET", "POST"])
 def index():
-    """Display the upload interface."""
+    """Display the upload interface and accept legacy form submissions."""
+    if request.method == "POST":
+        return start_analysis()
     return render_template("index.html", report=None, error=None)
 
 
