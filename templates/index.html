@@ -217,6 +217,7 @@
         {% endif %}
 
         <footer>
+            <p>Run Glassbox on your computer: <a href="https://github.com/tossout1/Glassbox" target="_blank" rel="noopener noreferrer">GitHub repository</a> · <a href="https://github.com/tossout1/Glassbox/archive/refs/heads/main.zip">Download source ZIP</a>. VM setup is required.</p>
             Heuristic results are not a guarantee of safety.
             Local-only prototype — do not expose the web server to untrusted networks.
         </footer>
@@ -267,7 +268,7 @@
                 ? "Linux ARM64 analysis is available."
                 : e.target.value === "macos"
                     ? "macOS analysis is available only when Glassbox runs on a compatible Mac. The macOS VM must be configured first."
-                    : "Windows analysis is not yet supported by the backend.";
+                    : "Windows requires a configured Windows VM image before analysis can run.";
         });
 
         // Upload asynchronously, then poll for real analysis milestones.
