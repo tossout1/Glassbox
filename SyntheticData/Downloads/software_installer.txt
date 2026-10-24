@@ -1,0 +1,6 @@
+Northstar  Software
+Version: 4.2.1
+Build: 2026.0915
+
+Synthetic installer placeholder.
+This file contains no executable software.

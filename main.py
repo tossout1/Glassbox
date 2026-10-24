@@ -1,0 +1,2101 @@
+import tkinter as tk
+from tkinter import filedialog
+from tkinterdnd2 import DND_FILES, TkinterDnD
+
+import shutil
+import platform
+import subprocess
+from pathlib import Path, PurePosixPath
+import time
+import atexit
+import signal
+import sys
+import tarfile
+import zipfile
+import stat
+import shlex
+
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+BASE_DIR = Path(__file__).resolve().parent
+
+PAYLOAD_PATH = BASE_DIR / "SyntheticData"
+SEED_FILE = BASE_DIR / "seed.iso"
+
+SSH_KEY = Path.home() / ".ssh" / "tln_sandbox"
+
+SSH_PORT = "2222"
+SSH_USER = "sandbox"
+SSH_HOST = "127.0.0.1"
+
+SYNTHETIC_HOME = "/home/Augustine Ramswell"
+
+REMOTE_INPUT = "/tmp/glassbox-input"
+REMOTE_WORKSPACE = "/tmp/glassbox-workspace"
+
+EXECUTION_TIMEOUT = 8
+
+MAX_ZIP_FILES = 200
+MAX_ZIP_TOTAL_SIZE = 100 * 1024 * 1024
+MAX_ZIP_SINGLE_FILE = 25 * 1024 * 1024
+
+vm = None
+
+
+# ============================================================
+# VM CLEANUP
+# ============================================================
+
+def stop_vm():
+    global vm
+
+    if vm is not None and vm.poll() is None:
+
+        print("Stopping VM...")
+
+        vm.terminate()
+
+        try:
+            vm.wait(timeout=5)
+
+        except subprocess.TimeoutExpired:
+
+            print("VM did not stop gracefully. Killing it...")
+
+            vm.kill()
+            vm.wait()
+
+        print("VM stopped.")
+
+
+def handle_exit(signum, frame):
+    stop_vm()
+    sys.exit(0)
+
+
+atexit.register(stop_vm)
+
+signal.signal(signal.SIGINT, handle_exit)
+signal.signal(signal.SIGTERM, handle_exit)
+
+
+# ============================================================
+# GUI
+# ============================================================
+
+window = TkinterDnD.Tk()
+
+window.title("Glassbox")
+window.geometry("800x650")
+
+window.selected_file = None
+
+
+title_label = tk.Label(
+    window,
+    text="GLASSBOX",
+    font=("Arial", 26, "bold")
+)
+
+title_label.pack(
+    pady=(20, 5)
+)
+
+
+subtitle_label = tk.Label(
+    window,
+    text="See what a file does before you trust it.",
+    font=("Arial", 12)
+)
+
+subtitle_label.pack(
+    pady=(0, 15)
+)
+
+
+drop_zone = tk.Label(
+    window,
+    text=(
+        "Drag & Drop a File Here\n\n"
+        "or click here to select a file"
+    ),
+    font=("Arial", 16),
+    height=6,
+    relief="groove",
+    borderwidth=2,
+    cursor="hand2"
+)
+
+drop_zone.pack(
+    padx=30,
+    pady=10,
+    fill=tk.X
+)
+
+
+display = tk.Text(
+    window,
+    font=("Courier", 11),
+    wrap=tk.WORD,
+    state="disabled"
+)
+
+display.pack(
+    padx=30,
+    pady=(10, 20),
+    fill=tk.BOTH,
+    expand=True
+)
+
+
+def add_text(text=""):
+
+    display.config(state="normal")
+
+    display.insert(
+        tk.END,
+        str(text) + "\n"
+    )
+
+    display.see(tk.END)
+
+    display.config(state="disabled")
+
+    window.update_idletasks()
+
+
+# ============================================================
+# SSH
+# ============================================================
+
+def ssh_base():
+
+    return [
+        "ssh",
+        "-4",
+
+        "-i",
+        str(SSH_KEY),
+
+        "-p",
+        SSH_PORT,
+
+        "-o",
+        "StrictHostKeyChecking=no",
+
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+
+        "-o",
+        "ConnectTimeout=5",
+
+        "-o",
+        "BatchMode=yes",
+
+        f"{SSH_USER}@{SSH_HOST}",
+    ]
+
+
+def vm_run(command, check=True, timeout=None):
+
+    try:
+
+        result = subprocess.run(
+            ssh_base() + [command],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+    except subprocess.TimeoutExpired:
+
+        raise RuntimeError(
+            "SSH command exceeded its host-side timeout."
+        )
+
+    if check and result.returncode != 0:
+
+        raise RuntimeError(
+            f"VM command failed:\n"
+            f"{command}\n\n"
+            f"{result.stderr.strip()}"
+        )
+
+    return result
+
+
+def wait_for_vm(timeout=120, interval=2):
+
+    add_text("Waiting for VM SSH...")
+
+    start = time.time()
+
+    while time.time() - start < timeout:
+
+        if vm.poll() is not None:
+
+            raise RuntimeError(
+                f"QEMU exited unexpectedly with "
+                f"code {vm.returncode}"
+            )
+
+        result = subprocess.run(
+            ssh_base() + ["echo READY"],
+            capture_output=True,
+            text=True,
+        )
+
+        if (
+            result.returncode == 0
+            and
+            "READY" in result.stdout
+        ):
+
+            add_text("VM SSH is ready.")
+            return
+
+        time.sleep(interval)
+
+    raise RuntimeError(
+        "VM SSH did not become ready."
+    )
+
+
+# ============================================================
+# SCP
+# ============================================================
+
+def scp_to_vm(local_file, remote_directory):
+
+    result = subprocess.run(
+        [
+            "scp",
+            "-4",
+
+            "-i",
+            str(SSH_KEY),
+
+            "-P",
+            SSH_PORT,
+
+            "-o",
+            "StrictHostKeyChecking=no",
+
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+
+            str(local_file),
+
+            f"{SSH_USER}@{SSH_HOST}:{remote_directory}/",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+
+        raise RuntimeError(
+            f"SCP failed:\n"
+            f"{result.stderr.strip()}"
+        )
+
+
+# ============================================================
+# SAFE FILE NAME
+# ============================================================
+
+def safe_filename(filename):
+
+    cleaned = ""
+
+    for char in filename:
+
+        if (
+            char.isalnum()
+            or
+            char in "._-"
+        ):
+            cleaned += char
+
+        else:
+            cleaned += "_"
+
+    if not cleaned:
+        cleaned = "submitted_file"
+
+    return cleaned
+
+
+# ============================================================
+# ZIP VALIDATION
+# ============================================================
+
+def inspect_zip(local_path):
+
+    files = []
+    total_size = 0
+
+    with zipfile.ZipFile(local_path) as archive:
+
+        infos = archive.infolist()
+
+        if len(infos) > MAX_ZIP_FILES:
+
+            raise RuntimeError(
+                f"ZIP contains too many entries "
+                f"({len(infos)} > {MAX_ZIP_FILES})."
+            )
+
+        for info in infos:
+
+            if info.is_dir():
+                continue
+
+            normalized = info.filename.replace(
+                "\\",
+                "/"
+            )
+
+            path = PurePosixPath(normalized)
+
+            # Reject traversal / absolute paths
+            if (
+                path.is_absolute()
+                or
+                ".." in path.parts
+            ):
+
+                raise RuntimeError(
+                    "ZIP contains an unsafe path: "
+                    f"{info.filename}"
+                )
+
+            if (
+                path.parts
+                and
+                ":" in path.parts[0]
+            ):
+
+                raise RuntimeError(
+                    "ZIP contains an unsafe path: "
+                    f"{info.filename}"
+                )
+
+            # Reject encrypted entries
+            if info.flag_bits & 0x1:
+
+                raise RuntimeError(
+                    "Encrypted ZIP entries are not "
+                    "supported by this prototype."
+                )
+
+            # Reject symbolic links
+            unix_mode = info.external_attr >> 16
+
+            if stat.S_ISLNK(unix_mode):
+
+                raise RuntimeError(
+                    "ZIP symbolic links are not supported."
+                )
+
+            if (
+                info.file_size
+                > MAX_ZIP_SINGLE_FILE
+            ):
+
+                raise RuntimeError(
+                    f"ZIP entry too large: "
+                    f"{info.filename}"
+                )
+
+            total_size += info.file_size
+
+            if total_size > MAX_ZIP_TOTAL_SIZE:
+
+                raise RuntimeError(
+                    "ZIP expands beyond the sandbox "
+                    "prototype's size limit."
+                )
+
+            files.append(normalized)
+
+    return files, total_size
+
+
+# ============================================================
+# ZIP ENTRYPOINT
+# ============================================================
+
+def choose_zip_entrypoint(files):
+
+    priorities = [
+        "__main__.py",
+        "main.py",
+        "app.py",
+        "run.py",
+        "start.py",
+
+        "main.sh",
+        "run.sh",
+        "start.sh",
+
+        "index.js",
+        "main.js",
+
+        "main.pl",
+        "main.rb",
+    ]
+
+    actual_files = [
+        name
+        for name in files
+        if not name.endswith("/")
+    ]
+
+    # First look for common entrypoint names
+    for priority in priorities:
+
+        matches = [
+            name
+            for name in actual_files
+            if PurePosixPath(name).name.lower()
+            == priority.lower()
+        ]
+
+        if matches:
+
+            return sorted(
+                matches,
+                key=lambda x: (
+                    len(PurePosixPath(x).parts),
+                    x
+                )
+            )[0]
+
+    # Otherwise first script we understand
+    supported_extensions = (
+        ".py",
+        ".sh",
+        ".js",
+        ".pl",
+        ".rb",
+        ".jar",
+    )
+
+    candidates = [
+        name
+        for name in actual_files
+        if name.lower().endswith(
+            supported_extensions
+        )
+    ]
+
+    if candidates:
+
+        return sorted(
+            candidates,
+            key=lambda x: (
+                len(PurePosixPath(x).parts),
+                x
+            )
+        )[0]
+
+    return None
+
+
+# ============================================================
+# STATIC ANALYSIS
+# ============================================================
+
+def static_analysis(remote_file):
+
+    quoted = shlex.quote(remote_file)
+
+    # Identify file type
+    file_result = vm_run(
+        f"file -b {quoted}",
+        check=False
+    )
+
+    type_text = (
+        file_result.stdout.strip()
+        or "Unknown"
+    )
+
+    # SHA-256
+    hash_result = vm_run(
+        f"sha256sum {quoted}",
+        check=False
+    )
+
+    sha256 = "Unknown"
+
+    if hash_result.returncode == 0:
+
+        parts = hash_result.stdout.split()
+
+        if parts:
+            sha256 = parts[0]
+
+    # File size
+    size_result = vm_run(
+        f"stat -c '%s' {quoted}",
+        check=False
+    )
+
+    size = (
+        size_result.stdout.strip()
+        or "Unknown"
+    )
+
+    # Detect whether this looks like readable text
+    text_check = vm_run(
+        f"grep -Iq . {quoted}",
+        check=False
+    )
+
+    text_preview = ""
+
+    if text_check.returncode == 0:
+
+        preview_result = vm_run(
+            f"head -n 30 {quoted}",
+            check=False
+        )
+
+        text_preview = (
+            preview_result.stdout.strip()
+        )
+
+    # Look for interesting strings
+    strings_result = vm_run(
+        (
+            f"strings -a -n 6 {quoted} "
+            "2>/dev/null | "
+            "grep -Ei "
+            "'curl|wget|powershell|"
+            "/etc/passwd|"
+            "ssh|socket|subprocess|"
+            "os\\.system|chmod|chown|"
+            "base64|http://|https://' "
+            "| head -n 30"
+        ),
+        check=False
+    )
+
+    interesting_strings = (
+        strings_result.stdout.strip()
+    )
+
+    return {
+        "type": type_text,
+        "sha256": sha256,
+        "size": size,
+        "strings": interesting_strings,
+        "text_preview": text_preview,
+    }
+
+# ============================================================
+# FILE MANIFEST
+# ============================================================
+
+def create_manifest(output_file):
+
+    home = shlex.quote(
+        SYNTHETIC_HOME
+    )
+
+    out = shlex.quote(
+        output_file
+    )
+
+    command = (
+        f"find {home} "
+        "-type f "
+        "-print0 "
+        "| sort -z "
+        "| xargs -0 -r sha256sum "
+        f"> {out}"
+    )
+
+    vm_run(
+        command,
+        check=False
+    )
+
+
+# ============================================================
+# EXECUTION COMMAND
+# ============================================================
+
+def build_execution_command(remote_file):
+
+    quoted = shlex.quote(remote_file)
+
+    extension = (
+        PurePosixPath(
+            remote_file
+        ).suffix.lower()
+    )
+
+    # Python
+    if extension == ".py":
+
+        return (
+            f"python3 {quoted}"
+        )
+
+    # Shell
+    if extension == ".sh":
+
+        return (
+            f"bash {quoted}"
+        )
+
+    # JavaScript
+    if extension == ".js":
+
+        available = vm_run(
+            "command -v node",
+            check=False
+        )
+
+        if available.returncode == 0:
+
+            return (
+                f"node {quoted}"
+            )
+
+        return None
+
+    # Perl
+    if extension == ".pl":
+
+        available = vm_run(
+            "command -v perl",
+            check=False
+        )
+
+        if available.returncode == 0:
+
+            return (
+                f"perl {quoted}"
+            )
+
+        return None
+
+    # Ruby
+    if extension == ".rb":
+
+        available = vm_run(
+            "command -v ruby",
+            check=False
+        )
+
+        if available.returncode == 0:
+
+            return (
+                f"ruby {quoted}"
+            )
+
+        return None
+
+    # Java archive
+    if extension == ".jar":
+
+        available = vm_run(
+            "command -v java",
+            check=False
+        )
+
+        if available.returncode == 0:
+
+            return (
+                f"java -jar {quoted}"
+            )
+
+        return None
+
+    # Determine whether it is an ELF executable
+    result = vm_run(
+        f"file -b {quoted}",
+        check=False
+    )
+
+    description = (
+        result.stdout.lower()
+    )
+
+    if "elf" in description:
+
+        return (
+            f"chmod +x {quoted} "
+            f"&& {quoted}"
+        )
+
+    # Try executable script with a shebang
+    shebang = vm_run(
+        f"head -c 2 {quoted}",
+        check=False
+    )
+
+    if shebang.stdout == "#!":
+
+        return (
+            f"chmod +x {quoted} "
+            f"&& {quoted}"
+        )
+
+    return None
+
+
+# ============================================================
+# BEHAVIOR EXECUTION
+# ============================================================
+
+def execute_and_monitor(
+    remote_file,
+    working_directory
+):
+
+    add_text("")
+    add_text(
+        "Starting behavioral analysis..."
+    )
+
+    # Snapshot synthetic environment before
+    create_manifest(
+        "/tmp/glassbox_before.txt"
+    )
+
+    vm_run(
+        "rm -f /tmp/glassbox_trace.txt",
+        check=False
+    )
+
+    execution = build_execution_command(
+        remote_file
+    )
+
+    if execution is None:
+
+        return {
+            "executed": False,
+            "reason": (
+                "Glassbox does not currently have an "
+                "interpreter for this file type."
+            ),
+            "stdout": "",
+            "stderr": "",
+            "returncode": None,
+            "changes": "",
+            "trace": "",
+        }
+
+    workdir = shlex.quote(
+        working_directory
+    )
+
+    # Give the program the synthetic home
+    inner_command = (
+        f"cd {workdir} && "
+        f"HOME={shlex.quote(SYNTHETIC_HOME)} "
+        f"USER='Augustine Ramswell' "
+        f"timeout {EXECUTION_TIMEOUT}s "
+        f"{execution}"
+    )
+
+    # Use strace if the image already contains it.
+    has_strace = vm_run(
+        "command -v strace",
+        check=False
+    )
+
+    if has_strace.returncode == 0:
+
+        run_command = (
+            "strace "
+            "-f "
+            "-qq "
+            "-e trace=file,process,network "
+            "-o /tmp/glassbox_trace.txt "
+            f"sh -c {shlex.quote(inner_command)}"
+        )
+
+    else:
+
+        run_command = (
+            f"sh -c "
+            f"{shlex.quote(inner_command)}"
+        )
+
+    result = vm_run(
+        run_command,
+        check=False,
+        timeout=EXECUTION_TIMEOUT + 10
+    )
+
+    # Snapshot after
+    create_manifest(
+        "/tmp/glassbox_after.txt"
+    )
+
+    diff = vm_run(
+        (
+            "diff -u "
+            "/tmp/glassbox_before.txt "
+            "/tmp/glassbox_after.txt "
+            "| tail -n 100"
+        ),
+        check=False
+    )
+
+    trace = ""
+
+    if has_strace.returncode == 0:
+
+        trace_result = vm_run(
+            (
+                "grep -E "
+                "'connect\\(|execve\\(|"
+                "unlink|rename|chmod|"
+                "/etc/|/home/' "
+                "/tmp/glassbox_trace.txt "
+                "2>/dev/null "
+                "| tail -n 60"
+            ),
+            check=False
+        )
+
+        trace = trace_result.stdout.strip()
+
+    return {
+        "executed": True,
+        "reason": "",
+        "stdout": result.stdout[-5000:],
+        "stderr": result.stderr[-5000:],
+        "returncode": result.returncode,
+        "changes": diff.stdout[-8000:],
+        "trace": trace[-8000:],
+    }
+
+
+# ============================================================
+# DISPLAY REPORT
+# ============================================================
+
+def calculate_safety_score(static, behavior):
+
+    score = 100
+    reasons = []
+
+    suspicious_strings = static.get("strings", "").lower()
+    trace = behavior.get("trace", "").lower()
+    changes = behavior.get("changes", "").lower()
+
+    # ========================================================
+    # STATIC INDICATORS
+    # ========================================================
+
+    dangerous_terms = {
+        "powershell": 15,
+        "/etc/passwd": 20,
+        "wget": 8,
+        "curl": 8,
+        "base64": 5,
+        "chmod": 6,
+        "chown": 6,
+        "subprocess": 5,
+        "os.system": 10,
+        "socket": 5,
+    }
+
+    static_penalty = 0
+
+    for term, penalty in dangerous_terms.items():
+
+        if term in suspicious_strings:
+
+            static_penalty += penalty
+
+            reasons.append(
+                f"- Suspicious reference detected: {term}"
+            )
+
+    score -= min(static_penalty, 40)
+
+
+    # ========================================================
+    # FILESYSTEM BEHAVIOR
+    # ========================================================
+
+    if behavior.get("changes"):
+
+        score -= 20
+
+        reasons.append(
+            "- File changed the synthetic environment"
+        )
+
+    else:
+
+        reasons.append(
+            "+ No synthetic files were changed"
+        )
+
+
+    # ========================================================
+    # SYSTEM TRACE
+    # ========================================================
+
+    if trace:
+
+        suspicious_trace_terms = [
+            "connect(",
+            "/etc/passwd",
+            "/etc/shadow",
+            "chmod",
+            "unlink",
+            "rename",
+        ]
+
+        trace_hits = 0
+
+        for term in suspicious_trace_terms:
+
+            if term in trace:
+
+                trace_hits += 1
+
+        if trace_hits > 0:
+
+            penalty = min(
+                trace_hits * 10,
+                30
+            )
+
+            score -= penalty
+
+            reasons.append(
+                f"- Detected {trace_hits} potentially "
+                f"suspicious system behaviors"
+            )
+
+        else:
+
+            reasons.append(
+                "+ No high-risk system calls detected"
+            )
+
+
+    # ========================================================
+    # EXECUTION RESULT
+    # ========================================================
+
+    if behavior.get("executed"):
+
+        returncode = behavior.get(
+            "returncode"
+        )
+
+        if returncode == 124:
+
+            score -= 10
+
+            reasons.append(
+                "- Program continued running until "
+                "the sandbox timeout"
+            )
+
+        elif returncode == 0:
+
+            reasons.append(
+                "+ Program exited normally"
+            )
+
+        elif returncode is not None:
+
+            score -= 5
+
+            reasons.append(
+                f"- Program exited with code {returncode}"
+            )
+
+    else:
+
+        reasons.append(
+            "+ File was inspected without executable behavior"
+        )
+
+
+    # ========================================================
+    # SUSPICIOUS STRINGS RESULT
+    # ========================================================
+
+    if not suspicious_strings:
+
+        reasons.append(
+            "+ No suspicious static strings detected"
+        )
+
+
+    # Keep within 0-100
+    score = max(
+        0,
+        min(100, score)
+    )
+
+
+    # ========================================================
+    # VERDICT
+    # ========================================================
+
+    if score >= 80:
+
+        verdict = "LIKELY SAFE"
+
+    elif score >= 55:
+
+        verdict = "CAUTION"
+
+    else:
+
+        verdict = "SUSPICIOUS"
+
+
+    return score, verdict, reasons
+
+def calculate_safety_score(static, behavior):
+
+    score = 100
+    reasons = []
+
+    suspicious_strings = static.get(
+        "strings",
+        ""
+    ).lower()
+
+    trace = behavior.get(
+        "trace",
+        ""
+    ).lower()
+
+    changes = behavior.get(
+        "changes",
+        ""
+    )
+
+    dangerous_terms = {
+        "powershell": 15,
+        "/etc/passwd": 20,
+        "wget": 8,
+        "curl": 8,
+        "base64": 5,
+        "chmod": 6,
+        "chown": 6,
+        "subprocess": 5,
+        "os.system": 10,
+        "socket": 5,
+    }
+
+    for term, penalty in dangerous_terms.items():
+
+        if term in suspicious_strings:
+
+            score -= penalty
+
+            reasons.append(
+                f"- Suspicious reference: {term}"
+            )
+
+    if changes:
+
+        score -= 20
+
+        reasons.append(
+            "- Synthetic files were changed"
+        )
+
+    else:
+
+        reasons.append(
+            "+ No synthetic files were changed"
+        )
+
+    suspicious_trace_terms = [
+        "connect(",
+        "/etc/passwd",
+        "/etc/shadow",
+        "unlink",
+        "chmod",
+        "rename",
+    ]
+
+    trace_hits = 0
+
+    for term in suspicious_trace_terms:
+
+        if term in trace:
+            trace_hits += 1
+
+    if trace_hits:
+
+        score -= min(
+            trace_hits * 10,
+            30
+        )
+
+        reasons.append(
+            f"- {trace_hits} potentially suspicious "
+            f"system behaviors detected"
+        )
+
+    elif behavior.get("executed"):
+
+        reasons.append(
+            "+ No high-risk traced behavior detected"
+        )
+
+    if behavior.get("executed"):
+
+        returncode = behavior.get(
+            "returncode"
+        )
+
+        if returncode == 124:
+
+            score -= 10
+
+            reasons.append(
+                "- Program reached execution timeout"
+            )
+
+        elif returncode == 0:
+
+            reasons.append(
+                "+ Program exited normally"
+            )
+
+        elif returncode is not None:
+
+            score -= 5
+
+            reasons.append(
+                f"- Program exited with code "
+                f"{returncode}"
+            )
+
+    else:
+
+        reasons.append(
+            "+ No executable behavior was detected"
+        )
+
+    if not suspicious_strings:
+
+        reasons.append(
+            "+ No suspicious static strings detected"
+        )
+
+    score = max(
+        0,
+        min(100, score)
+    )
+
+    if score >= 80:
+
+        verdict = "LIKELY SAFE"
+
+    elif score >= 55:
+
+        verdict = "CAUTION"
+
+    else:
+
+        verdict = "SUSPICIOUS"
+
+    return score, verdict, reasons
+
+def show_report(
+    name,
+    static,
+    behavior,
+    zip_info=None
+):
+
+    add_text("")
+    add_text("=" * 60)
+
+    add_text(
+        "GLASSBOX ANALYSIS REPORT"
+    )
+
+    add_text("=" * 60)
+
+    add_text(
+        f"File: {name}"
+    )
+
+    add_text(
+        f"Type: {static['type']}"
+    )
+
+    add_text(
+        f"Size: {static['size']} bytes"
+    )
+
+    add_text(
+        f"SHA-256: {static['sha256']}"
+    )
+
+
+    # ========================================================
+    # ZIP INFORMATION
+    # ========================================================
+
+    if zip_info:
+
+        add_text("")
+        add_text("ZIP WORKSPACE")
+
+        add_text(
+            f"Files: {zip_info['count']}"
+        )
+
+        add_text(
+            f"Expanded size: "
+            f"{zip_info['size']} bytes"
+        )
+
+        add_text(
+            f"Entrypoint: "
+            f"{zip_info['entrypoint']}"
+        )
+
+
+    # ========================================================
+    # STATIC FINDINGS
+    # ========================================================
+
+    if static.get("strings"):
+
+        add_text("")
+        add_text(
+            "Interesting static strings:"
+        )
+
+        add_text(
+            static["strings"]
+        )
+
+
+    # ========================================================
+    # BEHAVIOR
+    # ========================================================
+
+    add_text("")
+    add_text("BEHAVIOR")
+
+    file_type = static.get(
+        "type",
+        ""
+    ).lower()
+
+    is_plain_text = (
+        "text" in file_type
+        or
+        "ascii" in file_type
+        or
+        "utf-8" in file_type
+    )
+
+    if not behavior["executed"]:
+
+        if is_plain_text:
+
+            add_text(
+                "Dynamic execution: NOT REQUIRED"
+            )
+
+            add_text(
+                "Plain text file — no executable "
+                "behavior detected."
+            )
+
+        else:
+
+            add_text(
+                "Dynamic execution: NOT PERFORMED"
+            )
+
+            add_text(
+                behavior["reason"]
+            )
+
+    else:
+
+        add_text(
+            "Dynamic execution: COMPLETED"
+        )
+
+        if behavior["returncode"] == 124:
+
+            add_text(
+                "Execution reached the sandbox "
+                "time limit."
+            )
+
+        else:
+
+            add_text(
+                f"Return code: "
+                f"{behavior['returncode']}"
+            )
+
+        if behavior["stdout"]:
+
+            add_text("")
+            add_text(
+                "Program output:"
+            )
+
+            add_text(
+                behavior["stdout"]
+            )
+
+        if behavior["stderr"]:
+
+            add_text("")
+            add_text(
+                "Program error output:"
+            )
+
+            add_text(
+                behavior["stderr"]
+            )
+
+        add_text("")
+        add_text(
+            "Changes to synthetic environment:"
+        )
+
+        if behavior["changes"]:
+
+            add_text(
+                behavior["changes"]
+            )
+
+        else:
+
+            add_text(
+                "No synthetic files changed."
+            )
+
+        if behavior["trace"]:
+
+            add_text("")
+            add_text(
+                "Observed system activity:"
+            )
+
+            add_text(
+                behavior["trace"]
+            )
+
+
+    # ========================================================
+    # SAFETY SCORE
+    # ========================================================
+
+    score, verdict, reasons = (
+        calculate_safety_score(
+            static,
+            behavior
+        )
+    )
+
+    add_text("")
+    add_text("=" * 60)
+
+    add_text(
+        "SAFETY ASSESSMENT"
+    )
+
+    add_text("=" * 60)
+
+    add_text(
+        f"Verdict: {verdict}"
+    )
+
+    add_text(
+        f"Estimated safety score: {score}%"
+    )
+
+    add_text("")
+    add_text("Reasons:")
+
+    for reason in reasons:
+
+        add_text(reason)
+
+    add_text("")
+
+    add_text(
+        "This is a heuristic estimate based on "
+        "observed behavior, not a guarantee that "
+        "the file is safe."
+    )
+
+    add_text("")
+    add_text("=" * 60)
+
+    add_text(
+        "Analysis finished."
+    )
+
+    add_text("=" * 60)
+
+# ============================================================
+# ANALYZE NORMAL FILE
+# ============================================================
+
+def analyze_normal_file(
+    local_path,
+    remote_path
+):
+
+    add_text(
+        "Performing static analysis..."
+    )
+
+    static = static_analysis(
+        remote_path
+    )
+
+    behavior = execute_and_monitor(
+        remote_path,
+        REMOTE_INPUT
+    )
+
+    show_report(
+        local_path.name,
+        static,
+        behavior
+    )
+
+
+# ============================================================
+# ANALYZE ZIP
+# ============================================================
+
+def analyze_zip(
+    local_path,
+    remote_zip
+):
+
+    add_text(
+        "ZIP detected."
+    )
+
+    add_text(
+        "Validating archive..."
+    )
+
+    files, total_size = inspect_zip(
+        local_path
+    )
+
+    add_text(
+        f"Archive contains "
+        f"{len(files)} files."
+    )
+
+    entrypoint = choose_zip_entrypoint(
+        files
+    )
+
+    vm_run(
+        f"rm -rf "
+        f"{shlex.quote(REMOTE_WORKSPACE)} "
+        f"&& mkdir -p "
+        f"{shlex.quote(REMOTE_WORKSPACE)}"
+    )
+
+    add_text(
+        "Extracting ZIP inside sandbox..."
+    )
+
+    result = vm_run(
+        (
+            "python3 -m zipfile -e "
+            f"{shlex.quote(remote_zip)} "
+            f"{shlex.quote(REMOTE_WORKSPACE)}"
+        ),
+        check=False
+    )
+
+    if result.returncode != 0:
+
+        raise RuntimeError(
+            "ZIP extraction failed:\n"
+            f"{result.stderr}"
+        )
+
+    listing = vm_run(
+        (
+            f"find "
+            f"{shlex.quote(REMOTE_WORKSPACE)} "
+            "-type f "
+            "-printf '%P\\n' "
+            "| head -n 100"
+        ),
+        check=False
+    )
+
+    add_text("")
+    add_text(
+        "Extracted workspace:"
+    )
+
+    add_text(
+        listing.stdout.strip()
+    )
+
+    # Static analysis on ZIP itself
+    static = static_analysis(
+        remote_zip
+    )
+
+    if entrypoint is None:
+
+        behavior = {
+            "executed": False,
+            "reason": (
+                "ZIP was safely extracted and inspected, "
+                "but no supported entrypoint was found."
+            ),
+            "stdout": "",
+            "stderr": "",
+            "returncode": None,
+            "changes": "",
+            "trace": "",
+        }
+
+        entry_display = (
+            "No supported entrypoint found"
+        )
+
+    else:
+
+        entry_remote = (
+            REMOTE_WORKSPACE
+            + "/"
+            + entrypoint
+        )
+
+        parent = str(
+            PurePosixPath(
+                entry_remote
+            ).parent
+        )
+
+        add_text("")
+        add_text(
+            f"Detected entrypoint: "
+            f"{entrypoint}"
+        )
+
+        behavior = execute_and_monitor(
+            entry_remote,
+            parent
+        )
+
+        entry_display = entrypoint
+
+    show_report(
+        local_path.name,
+        static,
+        behavior,
+        zip_info={
+            "count": len(files),
+            "size": total_size,
+            "entrypoint": entry_display,
+        }
+    )
+
+
+# ============================================================
+# PROCESS DROPPED FILE
+# ============================================================
+
+def process_selected_file(path):
+
+    local_path = Path(path)
+
+    if not local_path.is_file():
+
+        add_text(
+            "Please select a file."
+        )
+
+        return
+
+    window.selected_file = local_path
+
+    drop_zone.config(
+        text=(
+            f"{local_path.name}\n\n"
+            "Analyzing..."
+        )
+    )
+
+    add_text("")
+    add_text(
+        "=" * 60
+    )
+
+    add_text(
+        f"Submitted: {local_path.name}"
+    )
+
+    try:
+
+        # Clear old input
+        vm_run(
+            (
+                f"rm -rf "
+                f"{shlex.quote(REMOTE_INPUT)} "
+                f"{shlex.quote(REMOTE_WORKSPACE)} "
+                f"&& mkdir -p "
+                f"{shlex.quote(REMOTE_INPUT)}"
+            )
+        )
+
+        safe_name = safe_filename(
+            local_path.name
+        )
+
+        temporary_copy = (
+            BASE_DIR /
+            f".glassbox_{safe_name}"
+        )
+
+        # Make filename predictable/safe for SCP
+        shutil.copy2(
+            local_path,
+            temporary_copy
+        )
+
+        add_text(
+            "Copying file into isolated VM..."
+        )
+
+        try:
+
+            scp_to_vm(
+                temporary_copy,
+                REMOTE_INPUT
+            )
+
+        finally:
+
+            if temporary_copy.exists():
+
+                temporary_copy.unlink()
+
+        remote_file = (
+            REMOTE_INPUT
+            + "/"
+            + temporary_copy.name
+        )
+
+        add_text(
+            "File transferred."
+        )
+
+        # ZIP archive
+        if zipfile.is_zipfile(
+            local_path
+        ):
+
+            analyze_zip(
+                local_path,
+                remote_file
+            )
+
+        else:
+
+            analyze_normal_file(
+                local_path,
+                remote_file
+            )
+
+        drop_zone.config(
+            text=(
+                f"{local_path.name}\n\n"
+                "Analysis complete"
+            )
+        )
+
+    except Exception as error:
+
+        add_text("")
+        add_text(
+            "ANALYSIS ERROR:"
+        )
+
+        add_text(
+            str(error)
+        )
+
+        drop_zone.config(
+            text=(
+                "Analysis failed\n\n"
+                "Drop another file to try again"
+            )
+        )
+
+
+def file_dropped(event):
+
+    files = window.tk.splitlist(
+        event.data
+    )
+
+    if not files:
+        return
+
+    # First file only for the MVP
+    process_selected_file(
+        files[0]
+    )
+
+
+def choose_file(event=None):
+
+    selected = filedialog.askopenfilename(
+        title="Choose a file to analyze"
+    )
+
+    if selected:
+
+        process_selected_file(
+            selected
+        )
+
+
+drop_zone.drop_target_register(
+    DND_FILES
+)
+
+drop_zone.dnd_bind(
+    "<<Drop>>",
+    file_dropped
+)
+
+drop_zone.bind(
+    "<Button-1>",
+    choose_file
+)
+
+
+# ============================================================
+# HOST DETECTION
+# ============================================================
+
+add_text(
+    "Detecting computer..."
+)
+
+system = platform.system()
+arch = platform.machine().lower()
+
+add_text(
+    f"Host: {system} / {arch}"
+)
+
+
+# ============================================================
+# CURRENT TESTED CONFIGURATION
+# ============================================================
+
+if system != "Linux":
+
+    raise RuntimeError(
+        "Current hackathon prototype is "
+        "configured for Linux."
+    )
+
+
+if arch not in (
+    "arm64",
+    "aarch64",
+):
+
+    raise RuntimeError(
+        "Current hackathon prototype is "
+        "configured for ARM64."
+    )
+
+
+qemu = "qemu-system-aarch64"
+
+qcow2_file = (
+    BASE_DIR /
+    "debian-12-genericcloud-arm64.qcow2"
+)
+
+firmware = Path(
+    "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
+)
+
+
+# ============================================================
+# CHECK REQUIRED COMPONENTS
+# ============================================================
+
+required_paths = [
+    qcow2_file,
+    SEED_FILE,
+    PAYLOAD_PATH,
+    SSH_KEY,
+    firmware,
+]
+
+for required in required_paths:
+
+    if not required.exists():
+
+        raise RuntimeError(
+            f"Required file missing: "
+            f"{required}"
+        )
+
+
+if shutil.which(qemu) is None:
+
+    raise RuntimeError(
+        f"{qemu} is not installed."
+    )
+
+
+# ============================================================
+# QEMU COMMAND
+# ============================================================
+
+cmd = [
+    qemu,
+
+    "-accel",
+    "kvm",
+
+    "-M",
+    "virt",
+
+    "-cpu",
+    "host",
+
+    "-m",
+    "4096",
+
+    "-smp",
+    "4",
+
+    "-bios",
+    str(firmware),
+
+    # Discard disk changes when VM exits
+    "-snapshot",
+
+    "-drive",
+    (
+        f"if=none,"
+        f"file={qcow2_file},"
+        f"format=qcow2,"
+        f"id=hd0"
+    ),
+
+    "-device",
+    "virtio-blk-device,drive=hd0",
+
+    "-drive",
+    (
+        f"if=none,"
+        f"file={SEED_FILE},"
+        f"format=raw,"
+        f"id=seed0"
+    ),
+
+    "-device",
+    "virtio-blk-device,drive=seed0",
+
+    # Host can SSH in.
+    # Guest-initiated external networking is restricted.
+    "-nic",
+    (
+        "user,"
+        "restrict=on,"
+        "hostfwd=tcp:127.0.0.1:2222-:22"
+    ),
+
+    "-nographic",
+]
+
+
+# ============================================================
+# START VM
+# ============================================================
+
+add_text(
+    "Starting isolated virtual machine..."
+)
+
+vm = subprocess.Popen(
+    cmd,
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    text=True
+)
+
+add_text(
+    f"VM PID: {vm.pid}"
+)
+
+
+# ============================================================
+# WAIT FOR VM
+# ============================================================
+
+wait_for_vm()
+
+
+# ============================================================
+# PREPARE SYNTHETIC HOME
+# ============================================================
+
+add_text(
+    "Preparing synthetic environment..."
+)
+
+vm_run(
+    f"sudo mkdir -p "
+    f"{shlex.quote(SYNTHETIC_HOME)}"
+)
+
+vm_run(
+    f"sudo chown sandbox:sandbox "
+    f"{shlex.quote(SYNTHETIC_HOME)}"
+)
+
+
+# ============================================================
+# PACKAGE SYNTHETIC DATA
+# ============================================================
+
+archive_path = (
+    BASE_DIR /
+    ".glassbox_synthetic.tar"
+)
+
+add_text(
+    "Loading synthetic files..."
+)
+
+try:
+
+    with tarfile.open(
+        archive_path,
+        "w"
+    ) as archive:
+
+        for item in PAYLOAD_PATH.iterdir():
+
+            archive.add(
+                item,
+                arcname=item.name
+            )
+
+    scp_to_vm(
+        archive_path,
+        "/tmp"
+    )
+
+    vm_run(
+        (
+            "sudo tar -xf "
+            "/tmp/.glassbox_synthetic.tar "
+            f"-C "
+            f"{shlex.quote(SYNTHETIC_HOME)}"
+        )
+    )
+
+    vm_run(
+        (
+            "sudo chown -R "
+            "sandbox:sandbox "
+            f"{shlex.quote(SYNTHETIC_HOME)}"
+        )
+    )
+
+    vm_run(
+        "rm -f "
+        "/tmp/.glassbox_synthetic.tar"
+    )
+
+finally:
+
+    if archive_path.exists():
+
+        archive_path.unlink()
+
+
+# ============================================================
+# READY
+# ============================================================
+
+vm_run(
+    f"mkdir -p "
+    f"{shlex.quote(REMOTE_INPUT)} "
+    f"{shlex.quote(REMOTE_WORKSPACE)}"
+)
+
+add_text("")
+add_text(
+    "Glassbox is ready."
+)
+
+add_text(
+    "Drop a file above to analyze it."
+)
+
+
+# ============================================================
+# WINDOW CLOSE
+# ============================================================
+
+def close_application():
+
+    add_text(
+        "Shutting down sandbox..."
+    )
+
+    stop_vm()
+
+    window.destroy()
+
+
+window.protocol(
+    "WM_DELETE_WINDOW",
+    close_application
+)
+
+
+# ============================================================
+# GUI LOOP
+# ============================================================
+
+window.mainloop()

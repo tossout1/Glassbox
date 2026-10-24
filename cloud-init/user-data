@@ -1,0 +1,16 @@
+#cloud-config
+
+users:
+  - name: sandbox
+    groups: sudo
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIH/Gmm8trvsDPINa9LzuV/frmwsmbbUDfUJP8iNWMWaN arnav@arnavpi5
+
+ssh_pwauth: false
+
+runcmd:
+  - systemctl enable ssh
+  - systemctl restart ssh

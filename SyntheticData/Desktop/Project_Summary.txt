@@ -1,0 +1,8 @@
+PROJECT AURORA
+
+Current Status: Testing
+Owner: Jordan 
+Priority: Normal
+
+Next Action:
+Complete integration testing and update the project report.

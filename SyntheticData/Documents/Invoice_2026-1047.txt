@@ -1,0 +1,13 @@
+INVOICE
+
+Invoice Number: INV-2026-1047
+Customer: Jordan 
+Company: Northstar LLC
+
+Description                 Amount
+----------------------------------
+Software Services           $1,250.00
+Technical Support             $350.00
+Documentation                 $175.00
+
+Total                       $1,775.00
