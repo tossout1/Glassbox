@@ -1233,6 +1233,8 @@ def analyze_zip(
     remote_zip
 ):
 
+    add_text(inspect_binary(local_path))
+
     add_text(
         "ZIP detected."
     )
