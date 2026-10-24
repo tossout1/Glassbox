@@ -4,6 +4,9 @@ The VM runs on a Linux ARM64 host. Uploaded files are analyzed inside the
 VM, not executed by the Flask server on the host.
 """
 import atexit
+import json
+import os
+import socket
 import platform
 import shlex
 import shutil
@@ -31,7 +34,7 @@ SEED_FILE = BASE_DIR / "seed.iso"
 
 SSH_KEY = Path.home() / ".ssh" / "tln_sandbox"
 
-SSH_PORT = "2222"
+SSH_PORT = os.environ.get("GLASSBOX_SSH_PORT", "2222")
 SSH_USER = "sandbox"
 SSH_HOST = "127.0.0.1"
 
@@ -81,7 +84,9 @@ signal.signal(signal.SIGINT, handle_exit)
 signal.signal(signal.SIGTERM, handle_exit)
 
 # Only one analysis may use the shared VM and its fixed workspace paths at once.
-ANALYSIS_LOCK = threading.Lock()
+WORKER_LIMIT = max(1, int(os.environ.get("GLASSBOX_WORKERS", "1")))
+WORKER_SLOTS = threading.BoundedSemaphore(WORKER_LIMIT)
+
 _ANALYSIS_MESSAGES = []
 _BOOTED = False
 JOBS = {}
@@ -1496,7 +1501,7 @@ def boot_sandbox():
         (
             "user,"
             "restrict=on,"
-            "hostfwd=tcp:127.0.0.1:2222-:22"
+            f"hostfwd=tcp:127.0.0.1:{SSH_PORT}-:22"
         ),
 
         "-nographic",
@@ -1550,10 +1555,7 @@ def boot_sandbox():
     # PACKAGE SYNTHETIC DATA
     # ============================================================
 
-    archive_path = (
-        BASE_DIR /
-        ".glassbox_synthetic.tar"
-    )
+    archive_path = Path(tempfile.mkstemp(prefix="glassbox_synthetic_", suffix=".tar")[1])
 
     add_text(
         "Loading synthetic files..."
@@ -1627,26 +1629,56 @@ def boot_sandbox():
 
     _BOOTED = True
 
+def _free_local_port():
+    """Reserve a candidate SSH forwarding port for an isolated VM process."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
 def run_analysis(job_id, local_path, original_name, temp_dir):
-    """Run one scan in a worker so the browser can poll for progress."""
+    """Queue jobs and run each scan in its own QEMU-owning process."""
     try:
-        _ANALYSIS_MESSAGES.clear()
-        set_progress(job_id, 10, "Validating file")
-        if zipfile.is_zipfile(local_path):
-            inspect_zip(local_path)
-        set_progress(job_id, 25, "Starting isolated virtual machine")
-        boot_sandbox()
-        set_progress(job_id, 55, "Analyzing file inside sandbox")
-        process_selected_file(local_path, original_name)
-        set_progress(job_id, 100, "Analysis complete")
+        with WORKER_SLOTS:
+            set_progress(job_id, 10, "Starting isolated VM worker")
+            env = os.environ.copy()
+            env["GLASSBOX_SSH_PORT"] = str(_free_local_port())
+            # Every worker process owns its QEMU instance, SSH port and report.
+            command = [sys.executable, str(BASE_DIR / "main.py"),
+                       "--worker", str(local_path), original_name]
+            result = subprocess.run(command, env=env, capture_output=True,
+                                    text=True, timeout=900)
+            if result.returncode:
+                raise RuntimeError((result.stderr or result.stdout)[-3000:]
+                                   or "Worker failed.")
+            report = result.stdout
+            with JOBS_LOCK:
+                JOBS[job_id].update(percent=100, stage="Analysis complete",
+                                    done=True, report=report)
+    except subprocess.TimeoutExpired:
         with JOBS_LOCK:
-            JOBS[job_id].update(done=True, report="\n".join(_ANALYSIS_MESSAGES))
+            JOBS[job_id].update(done=True, error="Worker exceeded 15-minute limit.")
     except Exception as exc:
         with JOBS_LOCK:
-            JOBS[job_id].update(done=True, error=str(exc), report="\n".join(_ANALYSIS_MESSAGES))
+            JOBS[job_id].update(done=True, error=str(exc))
     finally:
         temp_dir.cleanup()
-        ANALYSIS_LOCK.release()
+
+
+def worker_main(local_path, original_name):
+    """CLI entry point: one process, one VM, one report."""
+    try:
+        if zipfile.is_zipfile(local_path):
+            inspect_zip(local_path)
+        boot_sandbox()
+        process_selected_file(Path(local_path), original_name)
+        print("\\n".join(_ANALYSIS_MESSAGES))
+        return 0
+    except Exception as exc:
+        print(f"Worker error: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        stop_vm()
 
 
 @app.route("/", methods=["GET", "POST"])
@@ -1669,8 +1701,6 @@ def start_analysis():
     uploaded = request.files.get("file")
     if uploaded is None or not uploaded.filename:
         return jsonify(error="Choose a file to analyze."), 400
-    if not ANALYSIS_LOCK.acquire(blocking=False):
-        return jsonify(error="Another analysis is running. Try again shortly."), 409
 
     temp_dir = None
     try:
@@ -1684,7 +1714,7 @@ def start_analysis():
             if len(JOBS) >= 30:
                 oldest = next(iter(JOBS))
                 JOBS.pop(oldest)
-            JOBS[job_id] = dict(percent=5, stage="Upload received", done=False, report="", error=None)
+            JOBS[job_id] = dict(percent=5, stage="Queued for available VM worker", done=False, report="", error=None)
         threading.Thread(
             target=run_analysis,
             args=(job_id, local_path, safe_name, temp_dir),
@@ -1694,7 +1724,6 @@ def start_analysis():
     except Exception as exc:
         if temp_dir is not None:
             temp_dir.cleanup()
-        ANALYSIS_LOCK.release()
         return jsonify(error=str(exc)), 500
 
 
@@ -1714,5 +1743,7 @@ def too_large(exc):
     return render_template("index.html", report=None, error="File exceeds 30 MiB upload limit."), 413
 
 if __name__ == "__main__":
+    if len(sys.argv) == 4 and sys.argv[1] == "--worker":
+        sys.exit(worker_main(sys.argv[2], sys.argv[3]))
     app.run(host="127.0.0.1", port=5000, debug=False, threaded=True, use_reloader=False)
     
