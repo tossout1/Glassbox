@@ -16,13 +16,13 @@ def inspect_windows_file(path, original_name):
         header = stream.read(4096)
     if header.startswith(b"MZ"):
         kind = "Windows PE candidate (MZ header)"
-    elif header.startswith(b"PK\\x03\\x04"):
+    elif header.startswith(bytes([80, 75, 3, 4])):
         kind = "ZIP-based file"
     elif header.startswith(b"#!"):
         kind = "Script with shebang"
     else:
         kind = "Unrecognized or data file"
-    return "\\n".join([
+    return chr(10).join([
         "GLASSBOX WINDOWS FILE INSPECTION",
         "Mode: STATIC ONLY (host-side)",
         f"File: {original_name}",

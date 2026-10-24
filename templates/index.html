@@ -168,12 +168,12 @@
                 <p><label for="os">Select your operating system</label></p>
                 <select id="os" name="os" class="os-select" required>
                     <option value="linux" selected>Linux</option>
-                    <option value="windows">Windows</option>
-                    <option value="macos">macOS</option>
+                    <option value="windows" disabled>Windows — Future goal</option>
+                    <option value="macos" disabled>macOS — Future goal</option>
                 </select>
 
                 <p class="notice" id="osNotice" role="status">
-                    Linux ARM64 analysis is available. macOS requires a Mac host and additional VM setup.
+                    Linux ARM64 analysis is available. Windows and macOS support are future goals.
                 </p>
 
                 <p class="notice">
@@ -232,7 +232,6 @@
         const button = document.getElementById("submit");
         const working = document.getElementById("working");
         const os = document.getElementById("os");
-        const osNotice = document.getElementById("osNotice");
 
         // Show the selected file name
         file.addEventListener("change", () => {
@@ -260,15 +259,6 @@
                 file.files = e.dataTransfer.files;
                 filename.textContent = file.files[0].name;
             }
-        });
-
-        // Display operating system compatibility
-        os.addEventListener("change", (e) => {
-            osNotice.textContent = e.target.value === "linux"
-                ? "Linux ARM64 analysis is available."
-                : e.target.value === "macos"
-                    ? "macOS analysis is available only when Glassbox runs on a compatible Mac. The macOS VM must be configured first."
-                    : "Windows ARM64 VM setup is available, but Windows file analysis is not implemented yet.";
         });
 
         // Upload asynchronously, then poll for real analysis milestones.

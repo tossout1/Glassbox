@@ -1636,11 +1636,18 @@ def _free_local_port():
         return sock.getsockname()[1]
 
 
-def run_analysis(job_id, local_path, original_name, temp_dir):
+def run_analysis(job_id, local_path, original_name, temp_dir, selected_os):
     """Queue jobs and run each scan in its own QEMU-owning process."""
     try:
         with WORKER_SLOTS:
             set_progress(job_id, 10, "Starting isolated VM worker")
+            if selected_os == "windows":
+                from windows_analysis import inspect_windows_file
+                report = inspect_windows_file(local_path, original_name)
+                with JOBS_LOCK:
+                    JOBS[job_id].update(percent=100, stage="Static inspection complete",
+                                        done=True, report=report)
+                return
             env = os.environ.copy()
             env["GLASSBOX_SSH_PORT"] = str(_free_local_port())
             # Every worker process owns its QEMU instance, SSH port and report.
@@ -1696,7 +1703,7 @@ def start_analysis():
     if selected_os not in ("linux", "windows", "macos"):
         return jsonify(error="Invalid OS selection."), 400
     if selected_os != "linux":
-        return jsonify(error="Only Linux ARM64 is currently supported."), 400
+        return jsonify(error="Windows and macOS analysis are future goals. Select Linux."), 400
 
     uploaded = request.files.get("file")
     if uploaded is None or not uploaded.filename:
@@ -1717,7 +1724,7 @@ def start_analysis():
             JOBS[job_id] = dict(percent=5, stage="Queued for available VM worker", done=False, report="", error=None)
         threading.Thread(
             target=run_analysis,
-            args=(job_id, local_path, safe_name, temp_dir),
+            args=(job_id, local_path, safe_name, temp_dir, selected_os),
             daemon=True,
         ).start()
         return jsonify(job_id=job_id), 202
