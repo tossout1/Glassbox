@@ -1681,7 +1681,7 @@ def run_analysis(job_id, local_path, original_name, temp_dir, selected_os):
             set_progress(job_id, 95, "Summarizing findings with local AI")
             summary = summarize_report(report)
             if summary:
-                report = "AI SUMMARY\n" + summary + "\n\nDETAILED ANALYSIS\n" + report
+                report = "AI SUMMARY\n" +  +"\n" + summary + "\n\nDETAILED ANALYSIS\n" + report
             else:
                 report = ("AI summary unavailable (model disabled or not cached).\n\n"
                           "DETAILED ANALYSIS\n" + report)
