@@ -1398,16 +1398,6 @@ def boot_sandbox():
             "configured for Linux."
         )
 
-    if arch not in (
-        "arm64",
-        "aarch64",
-    ):
-
-        raise RuntimeError(
-            "Current hackathon prototype is "
-            "configured for ARM64."
-        )
-
     qemu = "qemu-system-aarch64"
 
     qcow2_file = (
@@ -1415,9 +1405,18 @@ def boot_sandbox():
         "debian-12-genericcloud-arm64.qcow2"
     )
 
-    firmware = Path(
-        "/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"
-    )
+    firmware_candidates = [
+        Path("/usr/share/qemu-efi-aarch64/QEMU_EFI.fd"),
+        Path("/usr/share/AAVMF/AAVMF_CODE.fd"),
+    ]
+    firmware = next((p for p in firmware_candidates if p.is_file()), firmware_candidates[0])
+
+    # KVM only accelerates ARM64 guests on compatible ARM64 Linux hosts.
+    # Other Linux architectures can emulate ARM64 through QEMU TCG.
+    use_kvm = arch in ("arm64", "aarch64") and Path("/dev/kvm").exists()
+    accelerator = "kvm" if use_kvm else "tcg"
+    guest_cpu = "host" if use_kvm else "cortex-a72"
+    add_text(f"QEMU accelerator: {accelerator} (guest CPU: {guest_cpu})")
 
     # ============================================================
     # CHECK REQUIRED COMPONENTS
@@ -1454,13 +1453,13 @@ def boot_sandbox():
         qemu,
 
         "-accel",
-        "kvm",
+        accelerator,
 
         "-M",
         "virt",
 
         "-cpu",
-        "host",
+        guest_cpu,
 
         "-m",
         "4096",
