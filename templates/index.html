@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Glassbox — File Analysis</title>
+    <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <meta name="theme-color" content="#0b1020">
 
     <style>
         :root {
@@ -282,7 +284,7 @@
             resultPanel.hidden = false;
             resultHeading.textContent = error ? "Analysis failed" : "Analysis report";
             resultText.textContent = error
-                ? (error + (report ? "\\n\\n" + report : ""))
+                ? (error + (report ? "\n\n" + report : ""))
                 : report;
             button.disabled = false;
             working.textContent = "";
