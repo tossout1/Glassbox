@@ -89,7 +89,7 @@ From the project root:
 
     cloud-localds seed.iso cloud-init/user-data cloud-init/meta-data
 
-The generated seed.iso is a local VM configuration file and is intentionally excluded from Git.
+The generated seed.iso is stored with Git LFS in this repository. Regenerate it whenever the cloud-init configuration or guest SSH key changes.
 
 ### 5. Train the optional local report model
 
@@ -128,7 +128,7 @@ If a reverse proxy uses a public hostname, add that exact hostname to GLASSBOX_T
 - The guest's network is configured with QEMU's restricted user networking. Do not loosen that setting without reviewing the security implications.
 - The upload limit is 30 MiB. ZIP files are also subject to entry-count and expanded-size limits.
 - The heuristic safety score is experimental and can produce false positives or false negatives. A high score must never be interpreted as proof of safety.
-- VM images, generated seed ISOs, model weights, SSH private keys, VM state, and temporary analysis data should remain outside Git.
+- The Debian VM image and generated seed ISO are stored with Git LFS. Model weights, SSH private keys, VM state, and temporary analysis data should remain outside Git.
 
 ## Repository layout
 
