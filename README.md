@@ -151,4 +151,4 @@ The Debian disk image, seed.iso, SyntheticData/, SSH private key, and locally tr
 
 ## License
 
-See LICENSE for the project license.
+A license has not yet been selected for this repository. Add a LICENSE file before accepting outside contributions or presenting the project as formally open source.
