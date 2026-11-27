@@ -1,157 +1,154 @@
 # Glassbox
 
-Glassbox is an experimental, locally hosted file-analysis application built with Flask and QEMU. It aims to inspect files in isolated virtual machines and report observed behavior.
+**Glassbox** is a locally hosted file-analysis prototype built with Flask, QEMU, and a small PyTorch report classifier. It combines static inspection with optional execution inside a disposable Debian Linux virtual machine, then presents the observations in a web report.
 
-> **Project status (October 2026):** Linux ARM64 analysis is implemented but requires a prepared guest and further validation. **Windows and macOS analysis are future goals**, not part of the current demo. Windows 11 ARM64 has been booted separately in QEMU, but neither platform has a completed dynamic-analysis workflow. Do not assume a file is safe based only on a Glassbox report.
+> **Current release: Linux only.** Glassbox is an experimental prototype, not a production malware-analysis service. Its heuristic score and experimental neural summary are not proof that a file is safe.
+
+## What works in this release
+
+- Flask web interface for uploading a file (30 MiB maximum).
+- Static file inspection, SHA-256 hashing, file-signature identification, and image metadata inspection.
+- Optional dynamic analysis inside a Debian 12 ARM64 QEMU guest.
+- ZIP validation and extraction inside the guest workspace.
+- A local PyTorch classifier that summarizes report indicators when locally trained weights are available.
+- Progress reporting while an analysis job runs.
+
+Windows and macOS analysis are **not supported** in this release.
+
+## How it works
+
+1. The Flask application accepts an upload and places it in a temporary host directory.
+2. A separate worker process starts a QEMU Linux guest using the local Debian disk image and cloud-init seed.
+3. The worker transfers the submitted file into the guest over forwarded SSH.
+4. Static inspection and, where applicable, time-limited execution take place in the guest.
+5. The worker returns the report. The local PyTorch model can add an experimental summary.
+
+The guest is launched with QEMU snapshot mode so changes to its base disk are discarded when the VM exits. This is a prototype containment measure, **not a guarantee against VM escape or every form of malicious behavior**.
 
 ## Requirements
 
-- A **Linux host** (developed on Raspberry Pi 5 running 64-bit Linux). Other Linux CPU architectures may emulate ARM64 with QEMU TCG, much more slowly.
-- Python 3 and pip, Git, QEMU ARM64 system emulator, ARM64 UEFI firmware, SSH/SCP, and enough free disk space and RAM.
-- For Windows setup: `swtpm`, an ARM64-compatible Windows 11 installation ISO, and suitable ARM64 UEFI firmware. Windows licensing/activation is the installer's responsibility.
-- A graphical desktop for `windows_vm.py` (currently uses QEMU GTK display).
+- 64-bit Linux host. The project was developed on a Raspberry Pi 5.
+- Python 3 and virtual-environment support.
+- QEMU ARM64 system emulator and ARM64 UEFI firmware.
+- Debian 12 ARM64 cloud image.
+- cloud-localds (provided by the Debian package cloud-image-utils).
+- OpenSSH client tools.
+- A local SSH key pair matching the public key in cloud-init/user-data.
+- The project's SyntheticData/ directory.
 
-The current VM configuration assigns **4 GB RAM** to each VM; avoid running multiple VMs or heavy local AI inference simultaneously on an 8 GB computer.
+On Debian or Raspberry Pi OS, install the host packages:
 
-### 1. Clone and install Python dependencies
+    sudo apt update
+    sudo apt install -y qemu-system-arm qemu-utils qemu-efi-aarch64 cloud-image-utils openssh-client
 
-```bash
-git clone https://github.com/tossout1/Glassbox.git
-cd Glassbox
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
+Package names and firmware paths can vary by distribution.
 
-PyTorch installation may vary by CPU architecture and Python version. For optional local AI setup and model caching, see [PYTORCH_AI_SETUP.md](PYTORCH_AI_SETUP.md). To disable AI summaries:
+## Setup
 
-```bash
-export GLASSBOX_AI_ENABLED=0
-```
+### 1. Clone the source and install Python packages
 
-### 2. Install Linux host packages (Debian / Raspberry Pi OS)
+    git clone https://github.com/tossout1/Glassbox.git
+    cd Glassbox
 
-```bash
-sudo apt update
-sudo apt install -y qemu-system-arm qemu-utils qemu-efi-aarch64 openssh-client swtpm swtpm-tools
-```
+    python3 -m venv .venv
+    source .venv/bin/activate
+    python -m pip install --upgrade pip
+    python -m pip install -r requirements.txt
 
-Package names and firmware locations vary by distribution. Confirm QEMU is available:
+### 2. Prepare the Linux guest files
 
-```bash
-qemu-system-aarch64 --version
-```
+Place an official Debian 12 ARM64 generic cloud image in the project root with this exact filename:
 
-### 3. Prepare the Linux ARM64 analysis guest
+    debian-12-genericcloud-arm64.qcow2
 
-The current Linux backend expects the following **local files**, which are not automatically generated by `pip install`:
+Obtain the image from an official Debian cloud-image source and verify its published checksum. Do not use an untrusted preconfigured VM image.
 
-| Path | Purpose |
-| --- | --- |
-| `debian-12-genericcloud-arm64.qcow2` | Debian 12 ARM64 cloud-image VM disk |
-| `seed.iso` | Cloud-init seed image to configure the VM |
-| `SyntheticData/` | Synthetic test files made available to the guest |
-| `~/.ssh/tln_sandbox` | SSH private key for guest access |
+Make sure the synthetic test data directory exists:
 
-The VM expects an SSH user named `sandbox` and forwards guest SSH to host `127.0.0.1:2222` by default. The guest must have SSH and the matching public key configured. Its synthetic environment must match the paths expected by `main.py`, including `/home/Augustine Ramswell`.
+    mkdir -p SyntheticData
 
-**Large-file distribution plan:** The repository intentionally does not contain VM disk images. Future releases can publish a manifest of approved download URLs and SHA-256 checksums for Linux guest assets; the setup tool should verify checksums before use. Download Debian cloud images from official Debian distribution sources when possible. Do not download arbitrary preconfigured VM images from untrusted sources. Windows installers must be obtained by each user from Microsoft; do not distribute installed Windows disks, activation material, or TPM state.\n\n**This part is not yet a one-command installer.** You must provision the Debian guest and cloud-init seed to match the application. Do not put SSH private keys or VM disk images into Git.
+Glassbox expects the guest to have a user named sandbox, SSH access on the forwarded host port 2222, and the synthetic home directory /home/Augustine Ramswell.
 
-Once configured, launch the website:
+### 3. Check the SSH key
 
-```bash
-python3 main.py
-```
+Glassbox expects this private key on the host:
 
-Open the local address printed by Flask. Select **Linux** for the implemented analysis path. Running the website does not automatically configure a missing Linux VM.
+    ~/.ssh/tln_sandbox
 
-### 4. Install Windows 11 ARM64 in QEMU (optional)
+The matching public key must appear under ssh_authorized_keys in cloud-init/user-data. The public key may be stored in this repository; **never commit the private key**.
 
-The Windows VM can be installed independently of the Flask analysis backend.
+To display the public key corresponding to an existing private key:
 
-First obtain a legitimate **Windows 11 ARM64 ISO**. Then create a blank virtual disk **only if you do not already have one**:
+    ssh-keygen -y -f ~/.ssh/tln_sandbox
 
-```bash
-qemu-img create -f qcow2 windows.qcow2 64G
-```
+Compare the output with the key in cloud-init/user-data. If they differ, update the cloud-init file with the correct public key before generating the seed image.
 
-**Never rerun the disk creation command over an existing installed VM.** Keep `windows.qcow2` and `windows_vm_state/` together and backed up.
+### 4. Generate the cloud-init seed ISO
 
-Start installation:
+From the project root:
 
-```bash
-python3 windows_vm.py --iso /absolute/path/to/windows11-arm64.iso
-```
+    cloud-localds seed.iso cloud-init/user-data cloud-init/meta-data
 
-The helper starts an ARM64 QEMU VM with a virtual TPM 2.0, persistent UEFI variable storage, and an **NVMe virtual system disk**. The NVMe controller is intentional: Windows Setup may not recognize a VirtIO block disk without an ARM64 storage driver, while installing Windows to a USB-attached disk is unsupported in this setup.
+The generated seed.iso is a local VM configuration file and is intentionally excluded from Git.
 
-At Windows Setup, select the roughly **64 GB unallocated NVMe disk**, complete installation, and create a **fictional local user** for the sandbox. Do not use real personal files or accounts in an analysis guest.
+### 5. Train the optional local report model
 
-After Windows is installed, boot without the installer ISO:
+The model weights are generated locally and are not included in the source repository:
 
-```bash
-python3 windows_vm.py
-```
+    python3 glassbox_nn.py --train
 
-If Windows boots back into the installer, stop the VM and retry without `--iso`.
+This creates models/glassbox_nn.pt. Training uses synthetic feature combinations; it is not training on a validated malware corpus. If the weights are unavailable, the detailed analysis report still works without the neural summary. To disable the summary explicitly:
 
-**Important limitations:**
-- The firmware must support the Secure Boot configuration required by your Windows installer; simply enabling a virtual TPM does **not** guarantee Secure Boot is enabled. Firmware files differ between distributions.
-- The VM's virtual network adapter may need an **ARM64-compatible Windows driver**. The Windows guest does not use the Raspberry Pi's physical Wi-Fi driver.
-- The Windows VM is **not yet wired into Glassbox's web analysis workflow**. Selecting Windows in the website does not currently run Windows file analysis.
-- Do not run untrusted files in the Windows VM just because it boots. The Windows analysis containment, monitoring, and automated reset workflow have not been implemented.
+    export GLASSBOX_AI_ENABLED=0
 
-### 5. Large-file downloads and reproducible installation\n\n**Source code:** clone this GitHub repository. **Linux VM disk:** obtain a verified ARM64 Debian 12 cloud image and configure it for Glassbox. **Cloud-init seed:** generate locally with the guest SSH public key; do not distribute private SSH keys. **Synthetic data:** generate or download only fictional test data. **Windows VM:** create a local blank 64 GB disk, install from a user-supplied Microsoft ARM64 ISO, and preserve UEFI/TPM state locally.\n\nA future `setup.py` or `scripts/setup_vms.py` can automate the above once the VM provisioning process and checksum manifest are implemented. No download URL or installer is currently guaranteed.\n\n### 6. Current OS support
+### 6. Run Glassbox locally
 
-| Guest operating system | VM boot/setup | Web file analysis |
-| --- | --- | --- |
-| Linux ARM64 | Supported with prepared Debian image | Implemented; testing ongoing |
-| Windows 11 ARM64 | QEMU installation helper available | Not yet implemented |
-| macOS | Not implemented | Not implemented |
+For development:
 
-The **host** operating system and the **guest** operating system are different: selecting Windows or macOS in the UI does not install those systems or change the host OS.
+    python3 main.py
 
-### Troubleshooting
+Open the local URL printed by Flask. The first analysis starts the QEMU guest and may take a little time while the VM boots.
 
-- **`Missing swtpm`**: install `swtpm` and verify `command -v swtpm`.
-- **Windows installer reports missing TPM / Secure Boot**: verify that `swtpm` is running and that the chosen ARM64 UEFI firmware supports Secure Boot with appropriate keys. This may require distribution-specific firmware setup.
-- **No disks in Windows Setup**: check that `windows_vm.py` presents `windows.qcow2` using the **NVMe** controller, not USB or VirtIO without drivers.
-- **`No 'usb-bus' bus found`**: create `qemu-xhci` before attaching USB devices.
-- **Windows asks for a Wi-Fi driver**: QEMU exposes a virtual network card, not the host's physical Wi-Fi hardware; install a compatible guest network driver or complete Windows setup offline.
-- **Linux analysis reports missing files**: confirm the Debian QCOW2, `seed.iso`, `SyntheticData/`, SSH key, and firmware path exist.
-- **Very slow VM on x86-64 Linux**: ARM64 emulation uses TCG rather than ARM64 KVM acceleration.
-- **macOS host**: native macOS hosting is not currently configured by this project.
+## Run with a WSGI server
 
-### Security and repository hygiene
+For a single-host deployment, use Gunicorn:
 
-Never commit `*.qcow2`, VM state, `uefi_vars.fd`, `*.permall`, `*.lock`, SSH private keys, passwords, real user data, or generated analysis samples. Keep guest network access restricted and use disposable test data. VM isolation is not an absolute security guarantee.
+    source .venv/bin/activate
+    GLASSBOX_TRUSTED_HOSTS=localhost,127.0.0.1 \
+    gunicorn --bind 127.0.0.1:8000 --workers 1 --threads 8 --timeout 60 wsgi:app
 
-### Development roadmap
+The WSGI entry point is wsgi.py. Keep **one Gunicorn worker process**: job state and the worker semaphore are currently held in process memory. Multiple Gunicorn worker processes could cause progress requests to reach a process that does not know about the submitted job. The application starts analysis in background threads and launches a separate QEMU-owning subprocess for each job.
 
-1. Make Linux guest provisioning reproducible.
-2. Add Windows guest file transfer, synthetic-data provisioning, monitoring, and report collection.
-3. Connect Windows analysis to Flask's OS selection and validate end-to-end behavior.
-4. Investigate supported macOS virtualization separately.
-5. Add automated tests and explicit cleanup/reset for each analysis run.
+If a reverse proxy uses a public hostname, add that exact hostname to GLASSBOX_TRUSTED_HOSTS as a comma-separated value. Keep Gunicorn bound to localhost and put a properly configured HTTPS reverse proxy in front of it.
 
+## Important security and deployment notes
 
-## Glassbox's own neural report model (experimental)
+- Do not expose the upload endpoint to the unrestricted public internet. It accepts user-supplied files and can execute supported content inside a VM. For a demonstration, restrict access to trusted testers using an authenticated reverse proxy or equivalent access control.
+- A VM is an isolation boundary, but not an absolute security guarantee. Keep QEMU and the host patched; use disposable test files and avoid real accounts or personal data in the guest.
+- The guest's network is configured with QEMU's restricted user networking. Do not loosen that setting without reviewing the security implications.
+- The upload limit is 30 MiB. ZIP files are also subject to entry-count and expanded-size limits.
+- The heuristic safety score is experimental and can produce false positives or false negatives. A high score must never be interpreted as proof of safety.
+- VM images, generated seed ISOs, model weights, SSH private keys, VM state, and temporary analysis data should remain outside Git.
 
-The CAC Linux report pipeline uses `glassbox_nn.py`, a small PyTorch neural
-classifier trained from scratch on **synthetic labeled feature combinations**.
-It is not a pretrained language model and has not been validated against real
-malware datasets. The generated two-sentence explanation combines its predicted
-category with directly extracted report indicators; the full report remains
-visible for verification.
+## Repository layout
 
-After installing requirements, train the model once on the Raspberry Pi:
+    Glassbox/
+    ├── binary_analysis.py
+    ├── cloud-init/
+    │   ├── meta-data
+    │   └── user-data
+    ├── glassbox_nn.py
+    ├── image_analysis.py
+    ├── main.py
+    ├── requirements.txt
+    ├── static/
+    │   └── favicon.svg
+    ├── templates/
+    │   └── index.html
+    └── wsgi.py
 
-```bash
-python3 glassbox_nn.py --train
-python3 main.py
-```
+The Debian disk image, seed.iso, SyntheticData/, SSH private key, and locally trained model weights must be prepared on the host.
 
-This writes `models/glassbox_nn.pt` locally. If the weights are absent or AI
-is disabled, Glassbox displays the detailed report without a neural summary.
-The model never downloads weights and does not guarantee that a file is safe.
+## License
+
+See LICENSE for the project license.
