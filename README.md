@@ -116,7 +116,7 @@ Start the included Gunicorn server with:
     source .venv/bin/activate
     ./run.sh
 
-The launcher binds to `127.0.0.1:8000` by default. Set `GLASSBOX_BIND` to change the bind address and port. Set `GLASSBOX_TRUSTED_HOSTS` to a comma-separated list of allowed hostnames when a reverse proxy uses a public hostname. `run.sh` delegates to `run_wsgi.sh`.
+`run.sh` first fast-forward pulls the current branch, compiles the model script, and trains the local model, then starts Gunicorn through `run_wsgi.sh`. The server binds to `127.0.0.1:8000` by default. Set `GLASSBOX_BIND` to change the bind address and port. Set `GLASSBOX_TRUSTED_HOSTS` to a comma-separated list of allowed hostnames when a reverse proxy uses a public hostname.
 
 The WSGI entry point is wsgi.py. Keep **one Gunicorn worker process**: job state and the worker semaphore are currently held in process memory. Multiple Gunicorn worker processes could cause progress requests to reach a process that does not know about the submitted job. The application starts analysis in background threads and launches a separate QEMU-owning subprocess for each job.
 
