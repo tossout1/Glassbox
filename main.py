@@ -102,7 +102,10 @@ def set_progress(job_id, percent, stage):
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
-app.config["TRUSTED_HOSTS"] = ["localhost", "127.0.0.1"]
+trusted_hosts = os.environ.get("GLASSBOX_TRUSTED_HOSTS", "localhost,127.0.0.1")
+app.config["TRUSTED_HOSTS"] = [
+    host.strip() for host in trusted_hosts.split(",") if host.strip()
+]
 
 def add_text(value=""):
     """Append a line to the current analysis report."""
@@ -1649,18 +1652,11 @@ def _free_local_port():
         return sock.getsockname()[1]
 
 
-def run_analysis(job_id, local_path, original_name, temp_dir, selected_os):
+def run_analysis(job_id, local_path, original_name, temp_dir):
     """Queue jobs and run each scan in its own QEMU-owning process."""
     try:
         with WORKER_SLOTS:
             set_progress(job_id, 10, "Starting isolated VM worker")
-            if selected_os == "windows":
-                from windows_analysis import inspect_windows_file
-                report = inspect_windows_file(local_path, original_name)
-                with JOBS_LOCK:
-                    JOBS[job_id].update(percent=100, stage="Static inspection complete",
-                                        done=True, report=report)
-                return
             env = os.environ.copy()
             env["GLASSBOX_SSH_PORT"] = str(_free_local_port())
             # Every worker process owns its QEMU instance, SSH port and report.
@@ -1721,11 +1717,9 @@ def index():
 @app.route("/analyze", methods=["POST"])
 def start_analysis():
     """Save a file and start background analysis."""
-    selected_os = request.form.get("os", "linux")
-    if selected_os not in ("linux", "windows", "macos"):
-        return jsonify(error="Invalid OS selection."), 400
+    selected_os = request.form.get("os", "linux").strip().lower()
     if selected_os != "linux":
-        return jsonify(error="Windows and macOS analysis are future goals. Select Linux."), 400
+        return jsonify(error="This Glassbox release supports Linux analysis only."), 400
 
     uploaded = request.files.get("file")
     if uploaded is None or not uploaded.filename:
@@ -1746,7 +1740,7 @@ def start_analysis():
             JOBS[job_id] = dict(percent=5, stage="Queued for available VM worker", done=False, report="", error=None)
         threading.Thread(
             target=run_analysis,
-            args=(job_id, local_path, safe_name, temp_dir, selected_os),
+            args=(job_id, local_path, safe_name, temp_dir),
             daemon=True,
         ).start()
         return jsonify(job_id=job_id), 202
@@ -1769,7 +1763,7 @@ def progress(job_id):
 @app.errorhandler(RequestEntityTooLarge)
 def too_large(exc):
     """Show a friendly error for uploads exceeding the size limit."""
-    return render_template("index.html", report=None, error="File exceeds 30 MiB upload limit."), 413
+    return jsonify(error="File exceeds the 30 MiB upload limit."), 413
 
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--worker":

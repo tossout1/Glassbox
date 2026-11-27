@@ -167,13 +167,14 @@
 
                 <input id="file" name="file" type="file" required>
 
-                <p><label for="os">Select your operating system</label></p>
-                <select id="os" name="os" class="os-select" required>
-                    <option value="linux" selected>Linux</option>
-                </select>
+                <p><strong>Analysis environment</strong></p>
+                <p class="os-select" aria-label="Supported operating system">
+                    Linux — Debian 12 ARM64
+                </p>
+                <input type="hidden" name="os" value="linux">
 
-                <p class="notice" id="osNotice" role="status">
-                    Linux ARM64 analysis is available.
+                <p class="notice" role="status">
+                    This release supports Linux analysis only.
                 </p>
 
                 <p class="notice">
@@ -231,7 +232,6 @@
         const form = document.getElementById("uploadForm");
         const button = document.getElementById("submit");
         const working = document.getElementById("working");
-        const os = document.getElementById("os");
 
         // Show the selected file name
         file.addEventListener("change", () => {
