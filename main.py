@@ -102,7 +102,10 @@ def set_progress(job_id, percent, stage):
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 30 * 1024 * 1024
-app.config["TRUSTED_HOSTS"] = ["localhost", "127.0.0.1"]
+trusted_hosts = os.environ.get("GLASSBOX_TRUSTED_HOSTS", "localhost,127.0.0.1")
+app.config["TRUSTED_HOSTS"] = [
+    host.strip() for host in trusted_hosts.split(",") if host.strip()
+]
 
 def add_text(value=""):
     """Append a line to the current analysis report."""
@@ -1721,11 +1724,9 @@ def index():
 @app.route("/analyze", methods=["POST"])
 def start_analysis():
     """Save a file and start background analysis."""
-    selected_os = request.form.get("os", "linux")
-    if selected_os not in ("linux", "windows", "macos"):
-        return jsonify(error="Invalid OS selection."), 400
+    selected_os = request.form.get("os", "linux").strip().lower()
     if selected_os != "linux":
-        return jsonify(error="Windows and macOS analysis are future goals. Select Linux."), 400
+        return jsonify(error="This Glassbox release supports Linux analysis only."), 400
 
     uploaded = request.files.get("file")
     if uploaded is None or not uploaded.filename:
@@ -1769,7 +1770,7 @@ def progress(job_id):
 @app.errorhandler(RequestEntityTooLarge)
 def too_large(exc):
     """Show a friendly error for uploads exceeding the size limit."""
-    return render_template("index.html", report=None, error="File exceeds 30 MiB upload limit."), 413
+    return jsonify(error="File exceeds the 30 MiB upload limit."), 413
 
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--worker":
