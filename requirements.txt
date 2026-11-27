@@ -1,5 +1,5 @@
 Flask>=3.1,<4
-gunicorn>=23,<24
+gunicorn>=23,<28
 torch
 transformers
 huggingface_hub

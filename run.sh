@@ -1,4 +1,5 @@
-git pull
-python3 -m py_compile glassbox_nn.py
-python3 glassbox_nn.py --train
-python3 main.py
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(dirname "$0")"
+exec ./run_wsgi.sh "$@"

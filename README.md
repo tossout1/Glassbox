@@ -111,11 +111,12 @@ Open the local URL printed by Flask. The first analysis starts the QEMU guest an
 
 ## Run with a WSGI server
 
-For a single-host deployment, use Gunicorn:
+Start the included Gunicorn server with:
 
     source .venv/bin/activate
-    GLASSBOX_TRUSTED_HOSTS=localhost,127.0.0.1 \
-    gunicorn --bind 127.0.0.1:8000 --workers 1 --threads 8 --timeout 60 wsgi:app
+    ./run.sh
+
+The launcher binds to `127.0.0.1:8000` by default. Set `GLASSBOX_BIND` to change the bind address and port. Set `GLASSBOX_TRUSTED_HOSTS` to a comma-separated list of allowed hostnames when a reverse proxy uses a public hostname. `run.sh` delegates to `run_wsgi.sh`.
 
 The WSGI entry point is wsgi.py. Keep **one Gunicorn worker process**: job state and the worker semaphore are currently held in process memory. Multiple Gunicorn worker processes could cause progress requests to reach a process that does not know about the submitted job. The application starts analysis in background threads and launches a separate QEMU-owning subprocess for each job.
 
