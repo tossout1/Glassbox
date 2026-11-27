@@ -12,7 +12,7 @@ else
     exit 1
 fi
 
-export GLASSBOX_BIND="${GLASSBOX_BIND:-127.0.0.1:8000}"
+export GLASSBOX_BIND="${GLASSBOX_BIND:-127.0.0.1:5000}"
 export GLASSBOX_TRUSTED_HOSTS="${GLASSBOX_TRUSTED_HOSTS:-localhost,127.0.0.1}"
 
 exec "$gunicorn_bin" \

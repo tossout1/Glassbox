@@ -11,7 +11,6 @@ else
     python_bin="python3"
 fi
 
-git pull --ff-only
 "$python_bin" -m py_compile glassbox_nn.py
 "$python_bin" glassbox_nn.py --train
 exec ./run_wsgi.sh "$@"
