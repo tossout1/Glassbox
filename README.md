@@ -31,7 +31,6 @@ The guest is launched with QEMU snapshot mode so changes to its base disk are di
 - Python 3 and virtual-environment support.
 - QEMU ARM64 system emulator and ARM64 UEFI firmware.
 - Debian 12 ARM64 cloud image.
-- cloud-localds (provided by the Debian package cloud-image-utils).
 - OpenSSH client tools.
 - Git LFS.
 - A local SSH key pair matching the public key in cloud-init/user-data.
@@ -40,7 +39,7 @@ The guest is launched with QEMU snapshot mode so changes to its base disk are di
 On Debian or Raspberry Pi OS, install the host packages:
 
     sudo apt update
-    sudo apt install -y qemu-system-arm qemu-utils qemu-efi-aarch64 cloud-image-utils openssh-client
+    sudo apt install -y qemu-system-arm qemu-utils qemu-efi-aarch64 openssh-client
 
 Package names and firmware paths can vary by distribution.
 
@@ -57,21 +56,7 @@ Package names and firmware paths can vary by distribution.
     python -m pip install --upgrade pip
     python -m pip install -r requirements.txt
 
-### 2. Prepare the Linux guest files
-
-Place an official Debian 12 ARM64 generic cloud image in the project root with this exact filename:
-
-    debian-12-genericcloud-arm64.qcow2
-
-Obtain the image from an official Debian cloud-image source and verify its published checksum. Do not use an untrusted preconfigured VM image.
-
-Make sure the synthetic test data directory exists:
-
-    mkdir -p SyntheticData
-
-The QCOW2 guest disk and seed ISO are stored with Git LFS. Run `git lfs pull` if either file is missing or appears as a small text pointer. Glassbox expects the guest to have a user named sandbox, SSH access on the forwarded host port 2222, and the synthetic home directory /home/Augustine Ramswell.
-
-### 3. Check the SSH key
+### 2. Check the SSH key
 
 Glassbox expects this private key on the host:
 
@@ -83,27 +68,9 @@ To display the public key corresponding to an existing private key:
 
     ssh-keygen -y -f ~/.ssh/tln_sandbox
 
-Compare the output with the key in cloud-init/user-data. If they differ, update the cloud-init file with the correct public key before generating the seed image.
+Compare the output with the key in cloud-init/user-data. It must match the key configured in the LFS seed ISO for guest SSH access to work.
 
-### 4. Generate the cloud-init seed ISO
-
-From the project root:
-
-    cloud-localds seed.iso cloud-init/user-data cloud-init/meta-data
-
-The seed ISO is stored with Git LFS in this repository. Regenerate it only after changing the cloud-init configuration or guest SSH key, then commit and push the updated LFS object.
-
-### 5. Train the optional local report model
-
-The model weights are generated locally and are not included in the source repository:
-
-    python3 glassbox_nn.py --train
-
-This creates models/glassbox_nn.pt. Training uses synthetic feature combinations; it is not training on a validated malware corpus. If the weights are unavailable, the detailed analysis report still works without the neural summary. To disable the summary explicitly:
-
-    export GLASSBOX_AI_ENABLED=0
-
-### 6. Run Glassbox locally
+### 3. Run Glassbox locally
 
 For local Flask development over HTTP:
 
@@ -118,7 +85,7 @@ Start the included Gunicorn server with:
     source .venv/bin/activate
     ./run.sh
 
-`run.sh` compiles the model script, trains the local model, then starts Gunicorn through `run_wsgi.sh`. The server listens over HTTP at `http://127.0.0.1:5000` by default. Set `GLASSBOX_BIND` to change the bind address and port. Set `GLASSBOX_TRUSTED_HOSTS` to a comma-separated list of allowed hostnames when using a hostname.
+`run.sh` compiles the model script, trains the local model, then starts Gunicorn through `run_wsgi.sh`. Model weights are generated locally and are not included in Git. The server listens over HTTP at `http://127.0.0.1:5000` by default. Set `GLASSBOX_BIND` to change the bind address and port. Set `GLASSBOX_TRUSTED_HOSTS` to a comma-separated list of allowed hostnames when using a hostname. To disable the optional model summary, set `GLASSBOX_AI_ENABLED=0` before starting the app.
 
 The WSGI entry point is wsgi.py. Keep **one Gunicorn worker process**: job state and the worker semaphore are currently held in process memory. Multiple Gunicorn worker processes could cause progress requests to reach a process that does not know about the submitted job. The application starts analysis in background threads and launches a separate QEMU-owning subprocess for each job.
 
@@ -129,7 +96,7 @@ The WSGI entry point is wsgi.py. Keep **one Gunicorn worker process**: job state
 - The guest's network is configured with QEMU's restricted user networking. Do not loosen that setting without reviewing the security implications.
 - The upload limit is 30 MiB. ZIP files are also subject to entry-count and expanded-size limits.
 - The heuristic safety score is experimental and can produce false positives or false negatives. A high score must never be interpreted as proof of safety.
-- The Debian VM image and generated seed ISO are stored with Git LFS. Model weights, SSH private keys, VM state, and temporary analysis data should remain outside Git.
+- The Debian VM image and seed ISO are stored with Git LFS. Model weights, SSH private keys, VM state, and temporary analysis data should remain outside Git.
 
 ## Repository layout
 
