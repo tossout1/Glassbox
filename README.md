@@ -33,6 +33,7 @@ The guest is launched with QEMU snapshot mode so changes to its base disk are di
 - Debian 12 ARM64 cloud image.
 - cloud-localds (provided by the Debian package cloud-image-utils).
 - OpenSSH client tools.
+- Git LFS.
 - A local SSH key pair matching the public key in cloud-init/user-data.
 - The project's SyntheticData/ directory.
 
@@ -49,6 +50,7 @@ Package names and firmware paths can vary by distribution.
 
     git clone https://github.com/tossout1/Glassbox.git
     cd Glassbox
+    git lfs pull
 
     python3 -m venv .venv
     source .venv/bin/activate
@@ -67,7 +69,7 @@ Make sure the synthetic test data directory exists:
 
     mkdir -p SyntheticData
 
-Glassbox expects the guest to have a user named sandbox, SSH access on the forwarded host port 2222, and the synthetic home directory /home/Augustine Ramswell.
+The QCOW2 guest disk and seed ISO are stored with Git LFS. Run `git lfs pull` if either file is missing or appears as a small text pointer. Glassbox expects the guest to have a user named sandbox, SSH access on the forwarded host port 2222, and the synthetic home directory /home/Augustine Ramswell.
 
 ### 3. Check the SSH key
 
@@ -89,7 +91,7 @@ From the project root:
 
     cloud-localds seed.iso cloud-init/user-data cloud-init/meta-data
 
-The generated seed.iso is stored with Git LFS in this repository. Regenerate it whenever the cloud-init configuration or guest SSH key changes.
+The seed ISO is stored with Git LFS in this repository. Regenerate it only after changing the cloud-init configuration or guest SSH key, then commit and push the updated LFS object.
 
 ### 5. Train the optional local report model
 
@@ -103,7 +105,7 @@ This creates models/glassbox_nn.pt. Training uses synthetic feature combinations
 
 ### 6. Run Glassbox locally
 
-For development:
+For local Flask development over HTTP:
 
     python3 main.py
 
@@ -116,7 +118,7 @@ Start the included Gunicorn server with:
     source .venv/bin/activate
     ./run.sh
 
-`run.sh` first fast-forward pulls the current branch, compiles the model script, and trains the local model, then starts Gunicorn through `run_wsgi.sh`. The server binds to `127.0.0.1:8000` by default. Set `GLASSBOX_BIND` to change the bind address and port. Set `GLASSBOX_TRUSTED_HOSTS` to a comma-separated list of allowed hostnames when a reverse proxy uses a public hostname.
+`run.sh` compiles the model script, trains the local model, then starts Gunicorn through `run_wsgi.sh`. The server binds to `127.0.0.1:5000` by default and serves HTTPS at `https://localhost:5000`. On first launch it creates a self-signed certificate for `localhost` in `.local-certs/`. This encrypts local traffic, but browsers will show a trust warning unless you add the certificate to your device's trust store. The private key stays local and is ignored by Git. Set `GLASSBOX_BIND` to change the bind address and port. Set `GLASSBOX_TRUSTED_HOSTS` to a comma-separated list of allowed hostnames when a reverse proxy uses a hostname. A publicly trusted certificate needs a certificate authority to validate the requested hostname or IP address.
 
 The WSGI entry point is wsgi.py. Keep **one Gunicorn worker process**: job state and the worker semaphore are currently held in process memory. Multiple Gunicorn worker processes could cause progress requests to reach a process that does not know about the submitted job. The application starts analysis in background threads and launches a separate QEMU-owning subprocess for each job.
 
@@ -142,13 +144,15 @@ If a reverse proxy uses a public hostname, add that exact hostname to GLASSBOX_T
     ├── image_analysis.py
     ├── main.py
     ├── requirements.txt
+    ├── run.sh
+    ├── run_wsgi.sh
     ├── static/
     │   └── favicon.svg
     ├── templates/
     │   └── index.html
     └── wsgi.py
 
-The Debian disk image, seed.iso, SyntheticData/, SSH private key, and locally trained model weights must be prepared on the host.
+The Debian disk image and seed.iso are retrieved with Git LFS. SyntheticData/, the SSH private key, locally trained model weights, and the self-signed certificate/key are local runtime assets.
 
 ## License
 
