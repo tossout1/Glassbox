@@ -1768,5 +1768,5 @@ def too_large(exc):
 if __name__ == "__main__":
     if len(sys.argv) == 4 and sys.argv[1] == "--worker":
         sys.exit(worker_main(sys.argv[2], sys.argv[3]))
-    app.run(host="127.0.0.1", port=5000, debug=False, threaded=True, use_reloader=False)
+    app.run(host="0.0.0.0", port=5000, debug=False, threaded=True, use_reloader=False)
     
