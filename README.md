@@ -2,7 +2,7 @@
 
 **Glassbox** is a locally hosted file-analysis prototype built with Flask, QEMU, and a small PyTorch report classifier. It combines static inspection with optional execution inside a disposable Debian Linux virtual machine, then presents the observations in a web report.
 
-> **Current release: Linux only.** Glassbox is an experimental prototype, not a production malware-analysis service. Its heuristic score and experimental neural summary are not proof that a file is safe.
+> **Current release: Linux only.** Glassbox is not a production malware-analysis service. Its heuristic score and experimental neural summary are not proof that a file is safe.
 
 ## What works in this release
 
@@ -27,67 +27,45 @@ The guest is launched with QEMU snapshot mode so changes to its base disk are di
 
 ## Requirements
 
-- 64-bit Linux host. The project was developed on a Raspberry Pi 5.
-- Python 3 and virtual-environment support.
-- QEMU ARM64 system emulator and ARM64 UEFI firmware.
-- Debian 12 ARM64 cloud image.
-- OpenSSH client tools.
-- Git LFS.
-- A local SSH key pair matching the public key in cloud-init/user-data.
-- The project's SyntheticData/ directory.
+Use a 64-bit Linux host with Python 3 and venv support, Git LFS, QEMU ARM64 and UEFI firmware, and OpenSSH client tools. `run.sh` creates `.venv` and installs the Python packages from `requirements.txt` the first time it runs. QEMU and SSH host packages must already be installed.
 
-On Debian or Raspberry Pi OS, install the host packages:
+## Quick start
 
-    sudo apt update
-    sudo apt install -y qemu-system-arm qemu-utils qemu-efi-aarch64 openssh-client
-
-Package names and firmware paths can vary by distribution.
-
-## Setup
-
-### 1. Clone the source and install Python packages
+### 1. Clone the repository
 
     git clone https://github.com/tossout1/Glassbox.git
     cd Glassbox
+
+### 2. Download the VM files with Git LFS
+
     git lfs pull
 
-    python3 -m venv .venv
-    source .venv/bin/activate
-    python -m pip install --upgrade pip
-    python -m pip install -r requirements.txt
+This downloads the Debian disk image and `seed.iso` used by the Linux guest.
 
-### 2. Check the SSH key
+### 3. Get the SSH key
 
-Glassbox expects this private key on the host:
+Glassbox needs the private key at `~/.ssh/tln_sandbox`. The matching public key is in `cloud-init/user-data`, and the LFS `seed.iso` is configured to accept that key. The private key is not in this public repository. Get the matching private key securely from the person who prepared the seed ISO; a newly generated key will not work with the supplied ISO.
 
-    ~/.ssh/tln_sandbox
+Save the key with the expected filename and set private permissions:
 
-The matching public key must appear under ssh_authorized_keys in cloud-init/user-data. The public key may be stored in this repository; **never commit the private key**.
+    mkdir -p ~/.ssh
+    chmod 700 ~/.ssh
+    # Save the matching private key as ~/.ssh/tln_sandbox
+    chmod 600 ~/.ssh/tln_sandbox
 
-To display the public key corresponding to an existing private key:
+Confirm that it matches the public key in `cloud-init/user-data`:
 
     ssh-keygen -y -f ~/.ssh/tln_sandbox
 
-Compare the output with the key in cloud-init/user-data. It must match the key configured in the LFS seed ISO for guest SSH access to work.
+Never send the private key in a public message or commit it to Git.
 
-### 3. Run Glassbox locally
+### 4. Start Glassbox
 
-For local Flask development over HTTP:
+    bash run.sh
 
-    python3 main.py
+On first run, the script creates `.venv` and installs the Python requirements. It then compiles and trains the local report model and starts Gunicorn. Open `http://127.0.0.1:5000`. The first analysis starts the QEMU guest and may take a little time while it boots.
 
-Open the local URL printed by Flask. The first analysis starts the QEMU guest and may take a little time while the VM boots.
-
-## Run with a WSGI server
-
-Start the included Gunicorn server with:
-
-    source .venv/bin/activate
-    ./run.sh
-
-`run.sh` compiles the model script, trains the local model, then starts Gunicorn through `run_wsgi.sh`. Model weights are generated locally and are not included in Git. The server listens over HTTP at `http://127.0.0.1:5000` by default. Set `GLASSBOX_BIND` to change the bind address and port. Set `GLASSBOX_TRUSTED_HOSTS` to a comma-separated list of allowed hostnames when using a hostname. To disable the optional model summary, set `GLASSBOX_AI_ENABLED=0` before starting the app.
-
-The WSGI entry point is wsgi.py. Keep **one Gunicorn worker process**: job state and the worker semaphore are currently held in process memory. Multiple Gunicorn worker processes could cause progress requests to reach a process that does not know about the submitted job. The application starts analysis in background threads and launches a separate QEMU-owning subprocess for each job.
+The WSGI entry point is `wsgi.py`. Keep **one Gunicorn worker process** because job state is held in process memory. To change the bind address or port, set `GLASSBOX_BIND` before starting. To disable the optional model summary, set `GLASSBOX_AI_ENABLED=0`.
 
 ## Important security and deployment notes
 
