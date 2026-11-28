@@ -8,4 +8,3 @@ uefi_vars.fd
 tpm2-00.permall
 __pycache__/
 *.pt
-.local-certs/
