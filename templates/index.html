@@ -183,6 +183,12 @@
                     Maximum upload: 30 MiB.
                 </p>
 
+                <p class="notice">
+                    Uploaded files and temporary server copies are deleted when analysis finishes.
+                    Temporary changes inside the VM are discarded when it stops.
+                    Reports stay in server memory temporarily so the page can show the results.
+                </p>
+
                 <button id="submit" type="submit">Analyze file</button>
                 <span id="working" role="status" aria-live="polite"></span>
                 <div id="progressPanel" class="progress-panel" hidden>

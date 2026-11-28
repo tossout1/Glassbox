@@ -2,7 +2,7 @@
 
 **Glassbox** is a locally hosted file-analysis prototype built with Flask, QEMU, and a small PyTorch report classifier. It combines static inspection with optional execution inside a disposable Debian Linux virtual machine, then presents the observations in a web report.
 
-> **Current release: Linux only.** Glassbox is not a production malware-analysis service. Its heuristic score and experimental neural summary are not proof that a file is safe.
+> **Current release: Linux only.** Glassbox's heuristic score and experimental neural summary are not proof that a file is safe.
 
 ## What works in this release
 
@@ -13,7 +13,7 @@
 - A local PyTorch classifier that summarizes report indicators when locally trained weights are available.
 - Progress reporting while an analysis job runs.
 
-Windows and macOS analysis are **not supported** in this release.
+Windows and macOS VM analysis are **not supported**.
 
 ## How it works
 
@@ -73,6 +73,7 @@ The WSGI entry point is `wsgi.py`. Keep **one Gunicorn worker process** because 
 - A VM is an isolation boundary, but not an absolute security guarantee. Keep QEMU and the host patched; use disposable test files and avoid real accounts or personal data in the guest.
 - The guest's network is configured with QEMU's restricted user networking. Do not loosen that setting without reviewing the security implications.
 - The upload limit is 30 MiB. ZIP files are also subject to entry-count and expanded-size limits.
+- Uploaded files and temporary server copies are deleted when analysis finishes. The VM runs in snapshot mode, so its temporary disk changes are discarded when it stops. Analysis results are kept temporarily in server memory so the page can display them; they are not saved to disk.
 - The heuristic safety score is experimental and can produce false positives or false negatives. A high score must never be interpreted as proof of safety.
 - The Debian VM image and seed ISO are stored with Git LFS. Model weights, SSH private keys, VM state, and temporary analysis data should remain outside Git.
 
@@ -96,7 +97,3 @@ The WSGI entry point is `wsgi.py`. Keep **one Gunicorn worker process** because 
     └── wsgi.py
 
 The Debian disk image and seed.iso are retrieved with Git LFS. SyntheticData/, the SSH private key, and locally trained model weights are local runtime assets.
-
-## License
-
-A license has not yet been selected for this repository. Add a LICENSE file before accepting outside contributions or presenting the project as formally open source.
