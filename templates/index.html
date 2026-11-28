@@ -1,13 +1,17 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <!-- Declare the page encoding and make the layout adapt to mobile screens. -->
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Glassbox — File Analysis</title>
+    <!-- Flask generates the favicon URL so it continues to work if the app is mounted under a prefix. -->
     <link rel="icon" type="image/svg+xml" href="{{ url_for('static', filename='favicon.svg') }}">
+    <!-- The browser may use this color for browser chrome on supported devices. -->
     <meta name="theme-color" content="#0b1020">
 
     <style>
+        /* Shared page defaults: dark browser controls, typography, background, and text color. */
         :root {
             color-scheme: dark;
             font-family: Inter, system-ui, Arial, sans-serif;
@@ -15,10 +19,12 @@
             color: #e7ecf5;
         }
 
+        /* Make declared widths include padding and borders for more predictable sizing. */
         * {
             box-sizing: border-box;
         }
 
+        /* Center the page content and add breathing room around the main application panel. */
         body {
             margin: 0;
             min-height: 100vh;
@@ -26,21 +32,25 @@
             background: radial-gradient(circle at top, #1b2c48, #0b1020 60%);
         }
 
+        /* Keep the interface readable on wide screens without stretching it indefinitely. */
         main {
             max-width: 960px;
             margin: auto;
         }
 
+        /* Establish the visual hierarchy for the Glassbox wordmark. */
         h1 {
             font-size: 3rem;
             letter-spacing: 0.14em;
             margin: 0 0 8px;
         }
 
+        /* Use a softer color for explanatory copy than for headings and controls. */
         p {
             color: #b5c4da;
         }
 
+        /* Reusable card style for the upload form, reports, and server-rendered messages. */
         .panel {
             background: #111c2e;
             border: 1px solid #30405b;
@@ -50,6 +60,7 @@
             box-shadow: 0 18px 45px #0004;
         }
 
+        /* The file label doubles as a large click target and a visual drop area. */
         .zone {
             display: block;
             border: 2px dashed #6982ab;
@@ -60,24 +71,29 @@
             transition: 0.2s;
         }
 
+        /* JavaScript adds this class while a file is being dragged over the drop area. */
         .zone.drag {
             border-color: #6cd9f5;
             background: #19334b;
         }
 
+        /* Put the primary upload instruction on its own line and make it prominent. */
         .zone strong {
             display: block;
             font-size: 1.3rem;
         }
 
+        /* Keep the secondary upload instruction visible without competing with the title. */
         .zone small {
             color: #abc2dd;
         }
 
+        /* The visible file picker is the styled label above; this remains the real form input. */
         input[type="file"] {
             display: none;
         }
 
+        /* Style the displayed analysis environment so it looks like a disabled selection control. */
         .os-select {
             background: #091120;
             color: #e7ecf5;
@@ -88,6 +104,7 @@
             max-width: 340px;
         }
 
+        /* Primary action used to submit a file for analysis. */
         button {
             background: #4e9bfa;
             color: #071526;
@@ -99,11 +116,13 @@
             cursor: pointer;
         }
 
+        /* Prevent repeated submissions while the current upload or analysis is running. */
         button:disabled {
             opacity: 0.55;
             cursor: wait;
         }
 
+        /* Preserve report line breaks while allowing long paths or extracted strings to wrap. */
         pre {
             white-space: pre-wrap;
             word-break: break-word;
@@ -116,10 +135,12 @@
             overflow: auto;
         }
 
+        /* Separate progress details from the controls above them. */
         .progress-panel {
             margin-top: 20px;
         }
 
+        /* The outer progress bar clips the moving fill to rounded corners. */
         .progress-track {
             width: 100%;
             height: 18px;
@@ -128,6 +149,7 @@
             border-radius: 10px;
         }
 
+        /* JavaScript changes this element's width to show the current milestone percentage. */
         .progress-fill {
             height: 100%;
             width: 0%;
@@ -135,14 +157,17 @@
             transition: width 0.35s ease;
         }
 
+        /* Reusable small-print style for limits, safety notes, and progress explanations. */
         .notice {
             font-size: 0.9rem;
         }
 
+        /* Make server-rendered errors and failed-job headings stand out. */
         .error {
             color: #ffb4b4;
         }
 
+        /* Keep repository links and prototype notes visually secondary. */
         footer {
             font-size: 0.85rem;
             color: #8497af;
@@ -152,31 +177,44 @@
 
 <body>
     <main>
+        <!-- Brand and short description shown above the analysis form. -->
         <header>
             <h1>GLASSBOX</h1>
             <p>See what a file does before you trust it.</p>
         </header>
 
-        <!-- File upload and operating system selection -->
+        <!-- Main upload panel. The browser JavaScript handles submission asynchronously,
+             while method/enctype describe the normal multipart form request. -->
         <section class="panel">
             <form id="uploadForm" method="post" enctype="multipart/form-data">
+                <!-- The label is connected to the hidden file input through for="file".
+                     Clicking it opens the picker; JavaScript also supports dropping a file here. -->
                 <label class="zone" id="zone" for="file">
                     <strong id="filename">Drag &amp; drop a file here</strong>
                     <small>Or click to choose a file</small>
                 </label>
 
+                <!-- Required real file input. It is visually hidden because the label above is
+                     the custom-styled control, but the browser still uses it for form submission. -->
                 <input id="file" name="file" type="file" required>
 
+                <!-- The current backend only accepts Linux analysis. Keep this visible explanation
+                     aligned with the hidden form value sent to the /analyze route. -->
                 <p><strong>Analysis environment</strong></p>
                 <p class="os-select" aria-label="Supported operating system">
                     Linux — Debian 12 ARM64
                 </p>
                 <input type="hidden" name="os" value="linux">
 
+                <!-- User-facing limit and sandbox information; these are explanatory notices,
+                     not substitutes for the server's upload-size and VM controls. -->
                 <p class="notice" role="status">
                     This release supports Linux analysis only.
                 </p>
 
+                <!-- Retention disclosure: the host temporary upload is cleaned up after the job,
+                     VM snapshot writes are discarded when that VM stops, and reports are held in
+                     process memory temporarily so the browser can display them. -->
                 <p class="notice">
                     Files run only inside the configured QEMU sandbox.
                     Analyses are queued and run in independent VM workers.
@@ -189,8 +227,11 @@
                     Reports stay in server memory temporarily so the page can show the results.
                 </p>
 
+                <!-- Submit control is disabled by JavaScript until the current job completes. -->
                 <button id="submit" type="submit">Analyze file</button>
+                <!-- Live status text lets assistive technology announce current activity. -->
                 <span id="working" role="status" aria-live="polite"></span>
+                <!-- Hidden until submission begins. JavaScript fills in the stage and percentage. -->
                 <div id="progressPanel" class="progress-panel" hidden>
                     <div id="progressStage" role="status" aria-live="polite">Preparing analysis...</div>
                     <div id="progressTrack" class="progress-track" role="progressbar"
@@ -203,12 +244,14 @@
             </form>
         </section>
 
+        <!-- Client-rendered result panel. JavaScript inserts text with textContent rather than
+             interpreting report text as HTML. It starts hidden until a result or error is ready. -->
         <section id="resultPanel" class="panel" hidden>
             <h2 id="resultHeading">Analysis report</h2>
             <pre id="resultText"></pre>
         </section>
 
-        <!-- Optional server-rendered messages -->
+        <!-- Optional server-rendered error from Flask, used by normal form-render responses. -->
         {% if error %}
         <section class="panel error">
             <strong>Analysis failed</strong>
@@ -216,6 +259,7 @@
         </section>
         {% endif %}
 
+        <!-- Optional server-rendered report. Flask/Jinja escapes these values in the HTML page. -->
         {% if report %}
         <section class="panel">
             <h2>Analysis report</h2>
@@ -223,6 +267,7 @@
         </section>
         {% endif %}
 
+        <!-- Static project links and brief safety reminders displayed below the main workflow. -->
         <footer>
             <p>Run Glassbox on your computer: <a href="https://github.com/tossout1/Glassbox" target="_blank" rel="noopener noreferrer">GitHub repository</a> · <a href="https://github.com/tossout1/Glassbox/archive/refs/heads/main.zip">Download source ZIP</a>. VM setup is required.</p>
             Heuristic results are not a guarantee of safety.
@@ -231,7 +276,7 @@
     </main>
 
     <script>
-        // DOM elements
+        // Cache the upload form elements that are used by selection, drag/drop, and submission code.
         const zone = document.getElementById("zone");
         const file = document.getElementById("file");
         const filename = document.getElementById("filename");
@@ -239,12 +284,14 @@
         const button = document.getElementById("submit");
         const working = document.getElementById("working");
 
-        // Show the selected file name
+        // When the picker changes, replace the prompt with the selected file's name.
+        // The fallback restores the original prompt if the selection is cleared.
         file.addEventListener("change", () => {
             filename.textContent = file.files[0]?.name || "Drag & drop a file here";
         });
 
-        // Highlight the upload area during drag-and-drop
+        // Prevent the browser from navigating to a dropped file. Add a visual highlight while
+        // the pointer is over the drop area so users can see where the file will be accepted.
         for (const event of ["dragenter", "dragover"]) {
             zone.addEventListener(event, (e) => {
                 e.preventDefault();
@@ -252,6 +299,8 @@
             });
         }
 
+        // Remove the drop highlight when the pointer leaves or a file is dropped. Preventing the
+        // default drop behavior keeps the browser on the Glassbox page.
         for (const event of ["dragleave", "drop"]) {
             zone.addEventListener(event, (e) => {
                 e.preventDefault();
@@ -259,7 +308,8 @@
             });
         }
 
-        // Accept dropped files
+        // Copy dropped files into the actual input element so FormData(form) sends them just like
+        // files selected through the operating-system picker.
         zone.addEventListener("drop", (e) => {
             if (e.dataTransfer.files.length) {
                 file.files = e.dataTransfer.files;
@@ -267,7 +317,8 @@
             }
         });
 
-        // Upload asynchronously, then poll for real analysis milestones.
+        // Cache progress and result elements once instead of querying the DOM on every poll.
+        // The progress values are server-reported analysis stages, not a time estimate.
         const progressPanel = document.getElementById("progressPanel");
         const progressTrack = document.getElementById("progressTrack");
         const progressFill = document.getElementById("progressFill");
@@ -278,6 +329,8 @@
         const resultText = document.getElementById("resultText");
 
         function updateProgress(percent, stage) {
+            // Update the visual fill, visible percentage, accessible progress-bar value, and
+            // readable stage text together so they always describe the same server update.
             progressFill.style.width = percent + "%";
             progressPercent.textContent = percent + "%";
             progressTrack.setAttribute("aria-valuenow", percent);
@@ -285,16 +338,21 @@
         }
 
         function showResult(report, error) {
+            // Reveal the result card and distinguish a completed report from a failed analysis.
+            // textContent keeps report/error strings as text, even if they contain HTML-like data.
             resultPanel.hidden = false;
             resultHeading.textContent = error ? "Analysis failed" : "Analysis report";
             resultText.textContent = error
                 ? (error + (report ? "\n\n" + report : ""))
                 : report;
+            // Let the user submit another file after the current job has finished or failed.
             button.disabled = false;
             working.textContent = "";
         }
 
         async function pollProgress(jobId) {
+            // The API creates a job first and returns its ID. Poll its status endpoint until the
+            // worker marks it done; each response supplies a stage and percentage for the UI.
             while (true) {
                 await new Promise((resolve) => setTimeout(resolve, 700));
                 const response = await fetch("/progress/" + encodeURIComponent(jobId));
@@ -314,12 +372,17 @@
         }
 
         form.addEventListener("submit", async (event) => {
+            // Keep the browser on this page; upload with fetch so progress can be displayed inline.
             event.preventDefault();
 
+            // The required attribute handles normal use; this guard also protects programmatic
+            // submissions where no file was selected.
             if (!file.files.length) {
                 return;
             }
 
+            // Enter the busy state before sending the request to prevent duplicate submissions
+            // and to show that the upload has begun.
             button.disabled = true;
             resultPanel.hidden = true;
             progressPanel.hidden = false;
@@ -327,6 +390,8 @@
             working.textContent = " Analysis in progress...";
 
             try {
+                // FormData includes the selected file and hidden Linux environment field. The
+                // browser sets the multipart boundary automatically, so no Content-Type is set.
                 const response = await fetch("/analyze", {
                     method: "POST",
                     body: new FormData(form)
@@ -337,8 +402,12 @@
                     throw new Error(data.error || "Could not start analysis.");
                 }
 
+                // The initial response contains a job ID; progress and final report arrive from
+                // the separate polling endpoint.
                 await pollProgress(data.job_id);
             } catch (error) {
+                // Display network, server, or polling errors in the same result panel and restore
+                // the submit button through showResult().
                 showResult("", error.message);
             }
         });
